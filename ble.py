@@ -189,7 +189,7 @@ class SMPClientBLE:
         if not isinstance(data, bytearray):
             data = bytearray(data)  # some BLE backend(s) might require this
 
-        logger.debug("RX:{}".format(data.hex()))
+        logger.debug("RX: %s", data.hex())
         if self._read_cb:
             self._read_cb(self, data)
 
@@ -219,7 +219,7 @@ class SMPClientBLE:
 
         if not await self._clnt.is_connected():
             raise RuntimeError("Not connected")
-
+        logger.debug("TX: %s", data.hex())
         await self._clnt.write_gatt_char(UUID_CHARACT, data, response=False)
 
     async def write_msg(self, msg):

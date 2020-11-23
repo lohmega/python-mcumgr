@@ -19,11 +19,11 @@ def signal_handler(signo):
     cancel_tasks()
 
 
-async def run(address):
+async def run():
     req = smp.MgmtMsg()
     req.hdr.nh_op = smp.MGMT_OP.READ
     req.hdr.nh_id = smp.Mynewt.OS_MGMT_ID.ECHO
-    req.set_payload("hello")
+    req.set_payload("hello2")
     async with ble.SMPClientBLE(name="hwt_lmin-0000") as clnt:
         await clnt.write_msg(req)
         rsp = await clnt.read_msg()
@@ -63,7 +63,7 @@ def main():
     for signo in [signal.SIGINT, signal.SIGTERM]:
         loop.add_signal_handler(signo, signal_handler, signo)
 
-    loop.run_until_complete(run(address))
+    loop.run_until_complete(run())
 
 
 if __name__ == "__main__":
