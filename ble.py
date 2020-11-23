@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import platform
@@ -22,6 +21,7 @@ logger = logging.getLogger(__name__)
 from subprocess import Popen, run, PIPE
 import time
 
+
 class _Queue:
     def __init__(self):
         self._loop = asyncio.get_running_loop()
@@ -29,13 +29,15 @@ class _Queue:
 
     def put_nowait(self, item):
         self._loop.call_soon(self._queue.put_nowait, item)
-        #self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+        # self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
 
     def put(self, item):
         asyncio.run_coroutine_threadsafe(self._queue.put(item), self._loop).result()
 
     def get(self):
-        return asyncio.run_coroutine_threadsafe(self._queue.get(item), self._loop).result()
+        return asyncio.run_coroutine_threadsafe(
+            self._queue.get(item), self._loop
+        ).result()
 
     def async_put_nowait(self, item):
         self._queue.put_nowait(item)
@@ -46,9 +48,11 @@ class _Queue:
     async def aget(self, timeout=None):
         return await self._queue.get()
 
+
 if platform.system() == "Linux":
+
     def bluetoothctl(dev):
-        props = dev.details['props']
+        props = dev.details["props"]
         if not props:
             logger.warning("No props")
             return
@@ -75,8 +79,9 @@ if platform.system() == "Linux":
             time.sleep(1)
 
         p.communicate()
-        logger.debug("bluethoothctl stdout:'%s', stderr:'%s'", str(p.stdout), str(p.stderr))
-
+        logger.debug(
+            "bluethoothctl stdout:'%s', stderr:'%s'", str(p.stdout), str(p.stderr)
+        )
 
 
 async def scan(address=None, name=None, timeout=10):
@@ -85,7 +90,11 @@ async def scan(address=None, name=None, timeout=10):
     candidates = await scanner.discover(timeout=timeout)
     suuid = UUID_SERVICE
     for d in candidates:
-        logger.debug("address={}. details={}, metadata={}".format(d.address, d.details, d.metadata))
+        logger.debug(
+            "address={}. details={}, metadata={}".format(
+                d.address, d.details, d.metadata
+            )
+        )
 
         if not "uuids" in d.metadata:
             continue
@@ -101,6 +110,7 @@ async def scan(address=None, name=None, timeout=10):
 
     return devices
 
+
 async def find_device(address=None, name=None, timeout=10):
     scanner = BleakScanner()
 
@@ -108,7 +118,11 @@ async def find_device(address=None, name=None, timeout=10):
     candidates = await scanner.discover(timeout=timeout)
 
     for d in candidates:
-        logger.debug("address={}. details={}, metadata={}".format(d.address, d.details, d.metadata))
+        logger.debug(
+            "address={}. details={}, metadata={}".format(
+                d.address, d.details, d.metadata
+            )
+        )
         if name and name == d.name:
             return d
 
@@ -117,9 +131,11 @@ async def find_device(address=None, name=None, timeout=10):
 
     return None
 
-class SMPClientBLE:
 
-    def __init__(self, address=None, name=None, timeout=10, read_cb=None, *args, **kwargs):
+class SMPClientBLE:
+    def __init__(
+        self, address=None, name=None, timeout=10, read_cb=None, *args, **kwargs
+    ):
         if address is None and name is None:
             raise ValueError("No device identifier. Need address or name")
 
@@ -134,7 +150,6 @@ class SMPClientBLE:
         self._timeout = timeout
 
         self._clnt = None
-
 
     def _set_disconnected_callback(self, cb):
         try:
@@ -157,22 +172,22 @@ class SMPClientBLE:
         logger.debug("Device found %s", str(dev))
 
         if platform.system() == "Linux":
-            bluetoothctl(dev) 
+            bluetoothctl(dev)
 
         await asyncio.sleep(1)
 
         self._clnt = BleakClient(dev, timeout=self._timeout)
-        #self._set_disconnected_callback(self._on_disconnect)
+        # self._set_disconnected_callback(self._on_disconnect)
         await self._clnt.connect(timeout=self._timeout)
         await self._clnt.start_notify(UUID_CHARACT, self._response_handler)
 
     async def disconnect(self):
-        #self._set_disconnected_callback(None)
+        # self._set_disconnected_callback(None)
         await self._clnt.disconnect()
 
     def _response_handler(self, sender, data):
         if not isinstance(data, bytearray):
-            data = bytearray(data) # some BLE backend(s) might require this
+            data = bytearray(data)  # some BLE backend(s) might require this
 
         logger.debug("RX:{}".format(data.hex()))
         if self._read_cb:
@@ -187,7 +202,7 @@ class SMPClientBLE:
 
         logger.debug("received msg size %d", msg.size)
         self._read_msg_q.put_nowait(msg)
-        self._read_buf = self._read_buf[msg.size:] # keep what is not part of msg
+        self._read_buf = self._read_buf[msg.size :]  # keep what is not part of msg
 
         if not self._read_evt.is_set():
             self._read_evt.set()
@@ -196,11 +211,11 @@ class SMPClientBLE:
         raise RuntimeError("Disconnected")
 
     async def write(self, data):
-        if hasattr(data, '__bytes__'):
+        if hasattr(data, "__bytes__"):
             data = bytes(data)
 
         if not isinstance(data, bytearray):
-            data = bytearray(data) # some BLE backend(s) might require this
+            data = bytearray(data)  # some BLE backend(s) might require this
 
         if not await self._clnt.is_connected():
             raise RuntimeError("Not connected")
@@ -214,13 +229,13 @@ class SMPClientBLE:
         return await self._read_msg_q.aget(timeout=timeout)
 
     async def write_read(self, data, read_size=None, timeout=0):
-            self._read_evt.clear()
-            self._read_buf.clear()
-            self._read_size = read_size
-            self.write(data)
+        self._read_evt.clear()
+        self._read_buf.clear()
+        self._read_size = read_size
+        self.write(data)
 
-            if timeout:
-                await asyncio.wait_for(self._read_evt.wait(), timeout)
-            else:
-                self._read_evt.wait()
+        if timeout:
+            await asyncio.wait_for(self._read_evt.wait(), timeout)
+        else:
+            self._read_evt.wait()
 

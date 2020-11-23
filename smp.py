@@ -1,7 +1,6 @@
-
 # mcumgr SMP (Simple Management Protocol) (previosly or based on NMP)
 # see https://github.com/apache/mynewt-mcumgr  for details.
-#   mynewt-mcumgr/protocol.md 
+#   mynewt-mcumgr/protocol.md
 #   mynewt-mcumgrmgmt/inlcude/mgmt.h
 
 from enum import Enum, IntEnum
@@ -9,20 +8,37 @@ import struct
 import logging
 
 logger = logging.getLogger(__name__)
-# MTU for newtmgr responses 
+# MTU for newtmgr responses
 MGMT_MAX_MTU = 1024
+
+
+def _enum2str(enumclass, val):
+    """
+    enumclass - a Enum class, either instance or class 
+    """
+    try:
+        return enumclass(val).name
+    except ValueError:
+        return "{}.<unknown {}>".format(enumclass.__name__, val)
+
 
 class MGMT_OP(IntEnum):
     """ Opcodes; encoded in first byte of header. """
+
+    # fmt: off
     READ          = 0
     READ_RSP      = 1
     WRITE         = 2
     WRITE_RSP     = 3
+    # fmt: on
+
 
 class MGMT_GROUP_ID(IntEnum):
     """ The first 64 groups are reserved for system level mcumgr commands.
      Per-user commands are then defined after group 64.
     """
+
+    # fmt: off
     OS      = 0
     IMAGE   = 1
     STAT    = 2
@@ -34,11 +50,13 @@ class MGMT_GROUP_ID(IntEnum):
     FS      = 8
     SHELL   = 9
     PERUSER = 64
+    # fmt: on
 
 
 class MGMT_ERR(IntEnum):
     """ mcumgr error codes """
 
+    # fmt: off
     EOK          = 0
     EUNKNOWN     = 1
     ENOMEM       = 2
@@ -50,25 +68,31 @@ class MGMT_ERR(IntEnum):
     ENOTSUP      = 8       #/* Command not supported. */
     ECORRUPT     = 9       #/* Corrupt */
     EPERUSER     = 256
-
-
+    # fmt: on
 
 
 class MGMT_EVT_OP(IntEnum):
     """ MGMT event opcodes."""
+
+    # fmt: off
     CMD_RECV         =  0x01
     CMD_STATUS       =  0x02
     CMD_DONE         =  0x03
+    # fmt: on
+
 
 class Mynewt:
     class OS_MGMT_ID(IntEnum):
         """ Command IDs for Mynewt OS management group. """
+
+        # fmt: off
         ECHO           = 0
         CONS_ECHO_CTRL = 1
         TASKSTAT       = 2
         MPSTAT         = 3
         DATETIME_STR   = 4
         RESET          = 5
+        # fmt: on
 
     """
     #define OS_MGMT_TASK_NAME_LEN       32
@@ -87,6 +111,7 @@ class Mynewt:
         char oti_name[OS_MGMT_TASK_NAME_LEN];
     };
     """
+
 
 class MgmtHdr:
     """
@@ -107,14 +132,7 @@ class MgmtHdr:
         """ only instances have size """
         return 8
 
-    def __init__(self,
-            nh_op=0,
-            nh_flags=0,
-            nh_len=0,
-            nh_group=0,
-            nh_seq=0,
-            nh_id=0
-        ):
+    def __init__(self, nh_op=0, nh_flags=0, nh_len=0, nh_group=0, nh_seq=0, nh_id=0):
 
         self.nh_op = nh_op & 0x03
         self.nh_flags = nh_flags
@@ -150,27 +168,30 @@ class MgmtHdr:
 class MgmtMsg:
     def __init__(self, hdr=MgmtHdr(), payload=bytearray()):
         self.hdr = hdr
-        self.payload = payload
+        self.payload = None
+        self.set_payload(payload)
 
     @property
     def size(self):
         hdr_size = MgmtHdr.BYTE_SIZE if self.hdr else 0
-        payload_size =  len(self.payload) if self.payload else 0
+        payload_size = len(self.payload) if self.payload else 0
         return hdr_size + payload_size
 
-    def to_bytes(self):
-        hdr = self.hdr.to_bytes()
-
-        # this should probably be in a setter
-        if isinstance(self.payload, (bytes, bytearray)):
-            payload = self.payload
-        elif isinstance(self.payload, str):
-            payload = self.payload.encode()
-        elif isinstance(self.payload, (list, tuple)):
-            payload = bytearray(self.payload)
+    def set_payload(self, obj):
+        if obj is None:
+            self.payload = bytearray()
+        elif isinstance(obj, (bytes, bytearray)):
+            self.payload = obj
+        elif isinstance(obj, str):
+            self.payload = obj.encode()
+        elif isinstance(obj, (list, tuple)):
+            self.payload = bytearray(obj)
         else:
             raise ValueError("Invalid payload type")
-        return hdr + payload
+        self.hdr.nh_len = len(self.payload)
+
+    def to_bytes(self):
+        return self.hdr.to_bytes() + self.payload
 
     @classmethod
     def from_bytes(cls, data):
@@ -182,7 +203,6 @@ class MgmtMsg:
         if (len(data) - hdr_size) < hdr.nh_len:
             raise IndexError("Size is less then header nh_len")
 
-        payload = data[hdr_size: hdr_size+hdr.nh_len]
+        payload = data[hdr_size : hdr_size + hdr.nh_len]
         return MgmtMsg(hdr, payload)
-
 

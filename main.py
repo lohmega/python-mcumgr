@@ -5,6 +5,7 @@ import ble
 import smp
 import sys
 
+
 def cancel_tasks():
     # Cancel all task to ensure all connections closed.  Otherwise devices
     # can be tied to "zombie connections" and not visible on next scan/connect.
@@ -13,24 +14,25 @@ def cancel_tasks():
             continue
         task.cancel()
 
+
 def signal_handler(signo):
     cancel_tasks()
 
 
 async def run(address):
     req = smp.MgmtMsg()
+    req.hdr.nh_op = smp.MGMT_OP.READ
     req.hdr.nh_id = smp.Mynewt.OS_MGMT_ID.ECHO
-    req.payload = "hello"
+    req.set_payload("hello")
     async with ble.SMPClientBLE(name="hwt_lmin-0000") as clnt:
         await clnt.write_msg(req)
         rsp = await clnt.read_msg()
-    print(rsp.payload)
-
+    print(vars(rsp.hdr))
+    print(rsp.payload.hex())
 
 
 def set_verbose(verbose_level):
     loggers = [ble.logger, smp.logger]
-
 
     if verbose_level <= 1:
         level = logging.WARNING
@@ -53,13 +55,9 @@ def set_verbose(verbose_level):
         l.setLevel(level)
         l.addHandler(handler)
 
+
 def main():
     set_verbose(3)
-    try:
-        address =  sys.argv[1]
-    except IndexError:
-        #address = "C1:F2:56:DE:2A:1A"
-        address = "27:52:05:AA:A5:C5" # hwt_lmin-0000
     loop = asyncio.get_event_loop()
     # signal.SIGHUP unix only
     for signo in [signal.SIGINT, signal.SIGTERM]:
@@ -70,3 +68,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
