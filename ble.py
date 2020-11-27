@@ -37,7 +37,7 @@ class _Queue:
 
     def get(self):
         return asyncio.run_coroutine_threadsafe(
-            self._queue.get(item), self._loop
+            self._queue.get(), self._loop
         ).result()
 
     def aput_nowait(self, item):
@@ -172,7 +172,7 @@ class SMPClientBLE:
         self._clnt = BleakClient(dev, timeout=self._timeout)
 
         try:
-            paired = self._clnt.pair()
+            paired = await self._clnt.pair()
             if not paired:
                 logger.warning("not paired")
         except NotImplementedError as e:
