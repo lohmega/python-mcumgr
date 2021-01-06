@@ -2,6 +2,7 @@ import asyncio
 import signal
 import logging
 import ble
+import nlip
 import smp
 import sys
 import cbor
@@ -26,9 +27,15 @@ async def run():
     req.hdr.nh_id = smp.Mynewt.OS_MGMT_ID.ECHO
     data = cbor.dumps({"d": "hello" })
     req.set_payload(data)
-    async with ble.SMPClientBLE(name="hwt_lmin-0000") as clnt:
-        await clnt.write_msg(req)
-        rsp = await clnt.read_msg()
+    if (0):
+        async with ble.SMPClientBLE(name="hwt_lmin-0000", timeout=10) as clnt:
+            await clnt.write_msg(req)
+            rsp = await clnt.read_msg()
+    else:
+        async with nlip.SMPClientNlip(device="/dev/ttyUSB0", baudrate="1000000", timeout=10) as clnt:
+            await clnt.write_msg(req)
+            rsp = await clnt.read_msg()
+
     print(vars(rsp.hdr))
     print(rsp.payload.hex())
     print(cbor.loads(rsp.payload))
