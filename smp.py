@@ -197,11 +197,11 @@ class MgmtMsg:
     def from_bytes(cls, data):
         hdr_size = MgmtHdr.BYTE_SIZE
         if len(data) < hdr_size:
-            raise IndexError("Size is less then header")
+            raise IndexError("Size is less than header")
 
         hdr = MgmtHdr.from_bytes(data[0:hdr_size])
         if (len(data) - hdr_size) < hdr.nh_len:
-            raise IndexError("Size is less then header nh_len")
+            raise IndexError("Size is less than header nh_len")
 
         payload = data[hdr_size : hdr_size + hdr.nh_len]
         return MgmtMsg(hdr, payload)
