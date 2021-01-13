@@ -1,10 +1,13 @@
 import asyncio
+#import concurrent.futures
 import logging
 import platform
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 import smp
 from queue import Queue
+from threading import Thread
+import signal
 
 # mcumgr or newtmgr can be used over BLE with the following GATT service and
 # characteristic UUIDs to connect to a SMP server running on the target device:
@@ -22,10 +25,48 @@ from subprocess import Popen, run, PIPE
 import time
 
 
+_thread_loop = None
+
+def _async_loop_worker(loop: asyncio.AbstractEventLoop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+def _async_exit():
+    # Cancel all task to ensure all connections closed.  Otherwise devices
+    # can be tied to "zombie connections" and not visible on next scan/connect.
+    for task in asyncio.Task.all_tasks():
+        if task is asyncio.tasks.Task.current_task():
+            continue
+        task.cancel()
+
+
+def _signal_handler(signo):
+    _async_exit()
+
+def _get_thread_loop():
+    global _thread_loop
+    if not _thread_loop is None:
+        return _thread_loop
+
+    _thread_loop = asyncio.new_event_loop()
+    t = Thread(target=_async_loop_worker, args=(_thread_loop,), daemon=True)
+    t.start()
+
+    if 0:
+        for signo in [signal.SIGINT, signal.SIGTERM]:
+            _thread_loop.add_signal_handler(signo, _async_exit, signo)
+    return _thread_loop
+
+
+def _async_call(coro): #func, *args, **kwargs):
+    """ run and "await" asyncio function/couroutine from synchronos code/context. """
+    task = asyncio.run_coroutine_threadsafe(coro, _get_thread_loop())
+    return task.result()
+
 class _Queue:
     """ Queue shared between asynchronous and synchronous code"""
     def __init__(self):
-        self._loop = asyncio.get_running_loop()
+        self._loop = _get_thread_loop()
         self._queue = asyncio.Queue()
 
     def put_nowait(self, item):
@@ -35,7 +76,8 @@ class _Queue:
     def put(self, item):
         asyncio.run_coroutine_threadsafe(self._queue.put(item), self._loop).result()
 
-    def get(self):
+    def get(self, timeout=None):
+        # TODO timeout
         return asyncio.run_coroutine_threadsafe(
             self._queue.get(), self._loop
         ).result()
@@ -47,6 +89,7 @@ class _Queue:
         await self._queue.put(item)
 
     async def aget(self, timeout=None):
+        # TODO timeout
         return await self._queue.get()
 
 
@@ -112,11 +155,11 @@ async def scan(address=None, name=None, timeout=10):
     return devices
 
 
-async def find_device(address=None, name=None, timeout=10):
+def find_device(address=None, name=None, timeout=10):
     scanner = BleakScanner()
 
     logger.debug("connecting...")
-    candidates = await scanner.discover(timeout=timeout)
+    candidates = _async_call(scanner.discover(timeout=timeout))
 
     for d in candidates:
         logger.debug(
@@ -155,15 +198,16 @@ class SMPClientBLE:
         except NotImplementedError:
             logger.debug("set_disconnected_callback not supported")
 
-    async def __aenter__(self):
-        await self.connect()
+    def __enter__(self):
+        self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.disconnect()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
 
-    async def connect(self):
-        dev = await find_device(self._address, self._name, self._timeout)
+    def connect(self):
+            
+        dev = find_device(self._address, self._name, self._timeout)
         if not dev:
             raise RuntimeError("Device not found")
 
@@ -172,7 +216,7 @@ class SMPClientBLE:
         self._clnt = BleakClient(dev, timeout=self._timeout)
 
         try:
-            paired = await self._clnt.pair()
+            paired =  _async_call(self._clnt.pair())
             if not paired:
                 logger.warning("not paired")
         except NotImplementedError as e:
@@ -182,12 +226,12 @@ class SMPClientBLE:
                 raise e # probably old bleak version
 
         # self._set_disconnected_callback(self._on_disconnect)
-        await self._clnt.connect(timeout=self._timeout)
-        await self._clnt.start_notify(UUID_CHARACT, self._response_handler)
+        _async_call(self._clnt.connect(timeout=self._timeout))
+        _async_call(self._clnt.start_notify(UUID_CHARACT, self._response_handler))
 
     async def disconnect(self):
         # self._set_disconnected_callback(None)
-        await self._clnt.disconnect()
+        _async_call(self._clnt.disconnect())
 
     def _response_handler(self, sender, data):
         if not isinstance(data, bytearray):
@@ -216,24 +260,24 @@ class SMPClientBLE:
     def _on_disconnect(self, client, _x=None):
         raise RuntimeError("Disconnected")
 
-    async def write(self, data):
+    def write(self, data):
         if hasattr(data, "__bytes__"):
             data = bytes(data)
 
         if not isinstance(data, bytearray):
             data = bytearray(data)  # some BLE backend(s) might require this
 
-        if not await self._clnt.is_connected():
+        if not _async_call(self._clnt.is_connected()):
             raise RuntimeError("Not connected")
         logger.debug("TX: %s", data.hex())
-        await self._clnt.write_gatt_char(UUID_CHARACT, data, response=False)
+        _async_call(self._clnt.write_gatt_char(UUID_CHARACT, data, response=False))
 
-    async def write_msg(self, msg):
-        await self.write(msg.to_bytes())
+    def write_msg(self, msg):
+        self.write(msg.to_bytes())
 
-    async def read_msg(self, timeout=None):
+    def read_msg(self, timeout=None):
         if self._read_cb:
             raise RuntimeError("blocking read not allowed when callback set")
 
-        return await self._read_msg_q.aget(timeout=timeout)
+        return self._read_msg_q.get(timeout=timeout)
 
