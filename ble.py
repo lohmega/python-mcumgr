@@ -229,7 +229,7 @@ class SMPClientBLE:
         _async_call(self._clnt.connect(timeout=self._timeout))
         _async_call(self._clnt.start_notify(UUID_CHARACT, self._response_handler))
 
-    async def disconnect(self):
+    def disconnect(self):
         # self._set_disconnected_callback(None)
         _async_call(self._clnt.disconnect())
 

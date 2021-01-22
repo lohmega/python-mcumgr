@@ -1,27 +1,15 @@
-import sys, argparse, tty, termios
 from queue import Queue
 from threading import Thread
-import re
-import time
-import json
+import logging
 import struct
 import base64
 import serial
-import serial.threaded
 import crcmod.predefined
-
-import asyncio
-import threading
-from serial.tools.list_ports import comports
-from socket import *
-from queue import Queue
-
-import logging
-import platform
 import smp
-from enum import Enum, IntEnum
+from enum import IntEnum
 
 logger = logging.getLogger(__name__)
+
 
 class NLIP_OP(IntEnum):
     """ Opcodes; first two bytes in nlip-line. """
@@ -33,47 +21,152 @@ class NLIP_OP(IntEnum):
     DATA_START2   = 20
     # fmt: on
 
-class _Queue:
-    """ Queue shared between asynchronous and synchronous code"""
+
+class NlipPkt:
+
+    # TODO handle crc in unpack
+    """ NLIP packet parser .
+        
+        data format is someting like this in pseudo c:
+        unclear where the crc is?
+
+           uint8_t start1; // = PKT_START1
+           uint8_t start2; // = PKT_START2
+           nlip_base64_encoded_pkt_data {
+                uint16_t len; // total size on packet (incl crc?)
+                char payload[X]; //  N > 0 && N < (MAX_DATA_PER_LINE -2)?
+           };
+           uint8_t eol; // == '\n' LF
+
+           // if data do not fit in above line, 
+           // it will be split into chunks (zero or more) as follow:
+           struct nlip_sub_data {
+                uint8_t start1; // = DATA_START1
+                uint8_t start2; // = DATA_START2
+                char bas64_enoded_payload[X]; //  N > 0 && N < (MAX_DATA_PER_LINE -2)?
+                uint8_t eol; // == '\n' LF
+           } sub_data[N]; // N >= 0
+
+           uint16_t crc; // crc of packet 
+           uint8_t eol; // == '\n' LF
+        }
+    """
+    MAX_DATA_PER_LINE = 120
+
     def __init__(self):
-        self._loop = asyncio.get_running_loop()
-        self._queue = asyncio.Queue()
+        self._buf = bytearray()
+        self._nlip_data = bytearray()
+        self._nlip_len = None  # not None when we have header. might be 0
 
-    def put_nowait(self, item):
-        self._loop.call_soon(self._queue.put_nowait, item)
-        # self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+    def reset(self):
+        self._buf = bytearray()
+        self._nlip_data = bytearray()
+        self._nlip_len = None  # not None when we have header. might be 0
 
-    def put(self, item):
-        asyncio.run_coroutine_threadsafe(self._queue.put(item), self._loop).result()
+    def _try_consume_payload(self):
+        msg = "nlip len {} in header and got {}".format(
+            self._nlip_len, len(self._nlip_data)
+        )
+        logger.debug(msg)
+        if self._nlip_len < len(self._nlip_data):
+            return None
 
-    def get(self):
-        return asyncio.run_coroutine_threadsafe(
-            self._queue.get(), self._loop
-        ).result()
+        payload = self._nlip_data
+        self.reset()
+        return payload
 
-    def aput_nowait(self, item):
-        self._queue.put_nowait(item)
+    def _parse_b64_pkt(self, b64data):
 
-    async def aput(self, item):
-        await self._queue.put(item)
+        assert self._nlip_len is None
+        data = base64.b64decode(b64data)
+        u16data = data[0:2]
+        if len(u16data) < 2:
+            logger.warning("missing nlip pkt len in '%s'", u16data.hex())
+            return None
 
-    async def aget(self, timeout=None):
-        return await self._queue.get()
+        (nlip_len,) = struct.unpack(">H", u16data)
+        logger.debug("nlip_pkt_len=%d", nlip_len)
+        self._nlip_len = nlip_len
 
-class HwtSerial(serial.threaded.LineReader):
-    """Represents the serial connection to a board used in the test"""
-    def __init__(self):
-        super(HwtSerial, self).__init__()
-        self.rx_cb = None
-        self.connected = False
+        self._nlip_data.extend(data[2:])
+        return self._try_consume_payload()
 
-    def connection_made(self, transport):
-        super(HwtSerial, self).connection_made(transport)
-        self.connected = True
+    def _parse_b64_sub(self, b64data):
+        assert self._nlip_len is not None
+        data = base64.b64decode(b64data)
+        self._nlip_data.extend(data)
 
-    def handle_line(self, line):
-        if self.rx_cb != None:
-            self.rx_cb(line)
+    def parse_line(self, line):
+        # ignore empty line
+        if not line:
+            return None
+
+        self._buf.extend(line)
+        if len(self._buf) < 2:
+            logger.debug("need more then 2 bytes")
+            return None
+
+        s1 = self._buf[0]
+        s2 = self._buf[1]
+
+        if s1 == NLIP_OP.PKT_START1 and s2 == NLIP_OP.PKT_START2:
+            return self._parse_b64_pkt(self._buf[2:])
+
+        if s1 == NLIP_OP.DATA_START1 and s2 == NLIP_OP.DATA_START2:
+            return self._parse_b64_sub(self._buf[2:])
+
+        # TODO is an error? ignore for now
+        msg = "Ignoring unknown start sequence '{:02x} {:02x}'".format(s1, s2)
+        logger.warning(msg)
+        self.reset()
+        # raise ValueError(msg)
+        return None
+
+    def _chunks(self, data, n):
+        """Yield successive n-sized chunks of data"""
+        for i in range(0, len(data), n):
+            yield data[i : i + n]
+
+    def _crc(self, data):
+        """ crc on b64 decoded data """
+        crc16 = crcmod.predefined.Crc("xmodem")
+        crc16.update(data)
+        return crc16.crcValue
+
+    def _pack_pkt_line(self, data):
+        line = struct.pack(">BB", NLIP_OP.PKT_START1, NLIP_OP.PKT_START2) + data + b"\n"
+        return line
+
+    def _pack_sub_line(self, data):
+        line = (
+            struct.pack(">BB", NLIP_OP.DATA_START1, NLIP_OP.DATA_START2) + data + b"\n"
+        )
+        return line
+
+    def pack(self, data):
+        crc = self._crc(data)
+
+        totlen = len(data) + 2
+        pktdata = struct.pack(">H", totlen) + data + struct.pack(">H", crc)
+        b64data = base64.b64encode(pktdata)
+
+        if len(b64data) < self.MAX_DATA_PER_LINE:
+            return self._pack_pkt_line(b64data)
+
+        n = int(0.75 * self.MAX_DATA_PER_LINE)
+        chunks = self._chunks(b64data, n)
+
+        ba = bytearray()
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                # first line with pkt_seq
+                line = self._pack_pkt_line(chunk)
+            else:
+                # remaining with sub pkt esc_seq
+                line = self._pack_sub_line(chunk)
+            ba.extend(line)
+
+        return ba
 
 
 class SMPClientNlip:
@@ -81,152 +174,107 @@ class SMPClientNlip:
     MAX_DATA_PER_LINE = 120
 
     def __init__(
-            self, device=None, baudrate=115200, timeout=10, read_cb=None, *args, **kwargs
+        self, device=None, baudrate=115200, timeout=10, read_cb=None, *args, **kwargs
     ):
+        """ warning: if param read_cb is provided it will be called from reader thread. 
+        safer to use blocking read with a timeout to consume incomming messages.
+        """
         if device is None:
             raise ValueError("No device identifier. Need address or name")
 
         self._device = device
         self._baudrate = baudrate
         self._timeout = timeout
+        # self._read_buf = bytearray()
         self._read_cb = read_cb
-        self._read_buf = bytearray()
-        self._read_msg_q = _Queue()
-        self._clnt = None
-        self._comm_ser = None
+        self._ser = None
+        self._read_msg_q = Queue()
+        self._read_thread = None
+        # self._clnt = None
 
-    def _set_disconnected_callback(self, cb):
-        try:
-            self._clnt.set_disconnected_callback(cb)
-        # not in all backend (yet). will work without it but might hang forever
-        except NotImplementedError:
-            #logger.debug("set_disconnected_callback not supported")
-            pass
-
-    async def __aenter__(self):
-        await self.connect()
+    def __enter__(self):
+        self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.disconnect()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
 
-    def nlip_clear(self):
-        self._nlip_data = bytearray()
-        self._nlip_len = 0
-        self._nlip_hdr = None
+    def _read_thread_worker(self, ser, msg_queue, read_cb):
+        logger.debug("reader thread started")
 
-    def nlip_process(self, b64_data):
-        data = base64.b64decode(b64_data);
-        print(data.hex())
-        if self._nlip_len == 0:
-            self._nlip_len, = struct.unpack('>H', data[0:2])
-            self._nlip_data += data[2:]
-        else:
-            self._nlip_data += data
+        if msg_queue and read_cb:
+            logger.warn("cant have both msg_queue and read_cb")
 
-        if (self._nlip_hdr == None and len(self._nlip_data) > 10):
-            self._nlip_hdr = smp.MgmtHdr.from_bytes(self._nlip_data[2:10])
-
-        if (self._nlip_len == len(self._nlip_data)):
+        nlip = NlipPkt()
+        while ser.is_open:
+            line = ser.readline()
+            rxline = bytearray(line)
+            logger.debug("RX: %s", rxline.hex())
+            msg = None
             try:
-                msg = smp.MgmtMsg.from_bytes(self._nlip_data)
-            except IndexError as e:
-                logger.debug("received %d bytes. %s", len(self._read_buf), str(e))
-
-            if self._read_cb:
-                self._read_cb(self, msg)
-            else:
-                self._read_msg_q.put_nowait(msg)
-
-    def received_line(self, line):
-        if (len(line) > 2):
-            if (ord(line[0]) == NLIP_OP.PKT_START1 and
-                ord(line[1]) == NLIP_OP.PKT_START2):
-                self.nlip_clear()
-                self.nlip_process(line[2:])
-            elif (ord(line[0]) == NLIP_OP.DATA_START1 and
-                ord(line[1]) == NLIP_OP.DATA_START2):
-                self.nlip_process(line[2:])
-            else:
-                print("line: {}".format(line))
-        else:
-            print("line: {}".format(line))
-
-    async def connect(self):
-        for p in sorted(comports()):
-            if self._device == p.device:
-                try:
-                    print("#   Opening {}".format(p.device))
-                    self.comm_ser = serial.Serial(p.device, baudrate=self._baudrate, timeout=self._timeout)
-                except serial.serialutil.SerialException:
-                    print('# Could not open ' + p.device)
-                    raise ValueError("Could not connect to port")
+                pkt = nlip.parse_line(rxline)
+                if pkt is not None:
+                    msg = smp.MgmtMsg.from_bytes(pkt)
+            except KeyboardInterrupt as e:
+                msg = e
                 break
+            except Exception as e:
+                msg = e
+            # should be None or some exception
+            logger.debug("read item: %s", str(msg))
+            if msg:
+                if read_cb:
+                    read_cb(msg)
+                else:
+                    msg_queue.put_nowait(msg)
+                # parser.reset()
 
-        self._clnt = serial.threaded.ReaderThread(self.comm_ser, HwtSerial)
+        logger.debug("reader thread stopped")
 
-        self.linereader = self._clnt.__enter__()
-        self.linereader.rx_cb = self.received_line
-
+    def connect(self):
+        self._ser = serial.Serial(
+            self._device, baudrate=self._baudrate, timeout=self._timeout
+        )
+        self._read_thread = Thread(
+            target=self._read_thread_worker,
+            args=(self._ser, self._read_msg_q, self._read_cb),
+            daemon=True,
+        )
+        self._read_thread.start()
         return 0
-        # self._set_disconnected_callback(self._on_disconnect)
-        #await self._clnt.connect(timeout=self._timeout)
-        #await self._clnt.start_notify(UUID_CHARACT, self._response_handler)
 
-    async def disconnect(self):
-        # self._set_disconnected_callback(None)
-        #await self._clnt.disconnect()
+    def disconnect(self):
+        logger.debug("closing serial port")
+        self._ser.close()
         return 0
 
-    def _on_disconnect(self, client, _x=None):
-        raise RuntimeError("Disconnected")
+    def is_connected(self):
+        return self._ser.is_open
 
-    async def is_connected(self):
-        while self.linereader.connected == False:
-            time.sleep(0.1);
-        return self.linereader.connected
-
-    async def write(self, data):
+    def write(self, data):
+        """ nlip pack and write """
         if hasattr(data, "__bytes__"):
             data = bytes(data)
 
-        if not isinstance(data, bytearray):
-            data = bytearray(data)  # some backend(s) might require this
+        if not isinstance(data, (bytes, bytearray)):
+            data = bytes(data)
 
-        if not await self.is_connected():
-            raise RuntimeError("Not connected")
+        nlip = NlipPkt()
+        data = nlip.pack(data)
+        logger.debug("TX: %s", data.hex())
+        self._ser.write(data)
+        self._ser.flush()
 
-        # Formal NLIP packet(s)
-        crc16 = crcmod.predefined.Crc('xmodem')
-        crc16.update(data)
-        data = struct.pack('>H', len(data)+2) + data + struct.pack('>H', crc16.crcValue)
-        if (len(base64.b64encode(data)) < self.MAX_DATA_PER_LINE):
-            txdata = struct.pack('>BB', NLIP_OP.PKT_START1, NLIP_OP.PKT_START2) + base64.b64encode(data) + b'\n';
-            logger.debug("TX: %s", txdata.hex())
-            print("# TX: {}".format(txdata.hex()))
-            self.comm_ser.write(txdata)
-        else:
-            offset = 0
-            sub_data = data[0:int(0.75*self.MAX_DATA_PER_LINE)]
-            txdata = struct.pack('>BB', NLIP_OP.PKT_START1, NLIP_OP.PKT_START2) + base64.b64encode(sub_data) + b'\n';
-            self.comm_ser.write(txdata)
-            while offset < len(data):
-                to_copy = len(data) - offset
-                if (to_copy > int(0.75*self.MAX_DATA_PER_LINE)): to_copy = int(0.75*self.MAX_DATA_PER_LINE)
-                sub_data = data[offset:(offset+to_copy)]
-                txdata = struct.pack('>BB', NLIP_OP.DATA_START1, NLIP_OP.DATA_START2) + base64.b64encode(sub_data) + b'\n';
-                self.comm_ser.write(txdata)
-                offset += to_copy
+    def write_msg(self, msg):
+        """ pack smp msg and write """
+        self.write(msg.to_bytes())
 
-        self.comm_ser.flush()
-        # Why do we need this sleep here?
-        time.sleep(0.5);
-
-    async def write_msg(self, msg):
-        await self.write(msg.to_bytes())
-
-    async def read_msg(self, timeout=None):
+    def read_msg(self, timeout=None):
         if self._read_cb:
             raise RuntimeError("blocking read not allowed when callback set")
+        itm = self._read_msg_q.get(timeout=timeout)
+        # raise error in main/caller thread instead of reader thread
+        if isinstance(itm, Exception):
+            raise itm
+        return itm
 
-        return await self._read_msg_q.aget(timeout=timeout)

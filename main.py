@@ -10,7 +10,7 @@ import cbor
 
 
 def set_verbose(verbose_level):
-    loggers = [ble.logger, smp.logger]
+    loggers = [ble.logger, smp.logger, nlip.logger]
 
     if verbose_level <= 1:
         level = logging.WARNING
@@ -34,6 +34,7 @@ def set_verbose(verbose_level):
         l.addHandler(handler)
 
 
+
 def main():
     set_verbose(3)
 
@@ -44,9 +45,15 @@ def main():
     data = cbor.dumps({"d": "hello" })
     req.set_payload(data)
     
-    with ble.SMPClientBLE(name="hwt_lmin-0000", timeout=10) as clnt:
-        clnt.write_msg(req)
-        rsp = clnt.read_msg()
+    if (0):
+        with ble.SMPClientBLE(name="hwt_lmin-0000", timeout=10) as clnt:
+            clnt.write_msg(req)
+            rsp = clnt.read_msg()
+
+    else:
+        with nlip.SMPClientNlip(device="/dev/ttyUSB0", baudrate="115200", timeout=10) as clnt:
+            clnt.write_msg(req)
+            rsp = clnt.read_msg()
 
     print(vars(rsp.hdr))
     print(rsp.payload.hex())
