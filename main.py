@@ -43,6 +43,7 @@ def main():
     req.hdr.nh_op = smp.MGMT_OP.READ
     req.hdr.nh_id = smp.Mynewt.OS_MGMT_ID.ECHO
     data = cbor.dumps({"d": "hello" })
+    data = cbor.dumps({"d": "hello hello hello hello hello hello hello hello hello hello hello hello" })
     req.set_payload(data)
     
     if (0):
