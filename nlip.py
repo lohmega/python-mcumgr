@@ -75,12 +75,10 @@ class NlipPkt:
     MAX_DATA_PER_LINE = 120
 
     def __init__(self):
-        self._buf = bytearray()
         self._nlip_data = bytearray()
         self._nlip_len = None  # not None when we have header. might be 0
 
     def reset(self):
-        self._buf = bytearray()
         self._nlip_data = bytearray()
         self._nlip_len = None  # not None when we have header. might be 0
 
@@ -89,7 +87,7 @@ class NlipPkt:
             self._nlip_len, len(self._nlip_data)
         )
         logger.debug(msg)
-        if self._nlip_len < len(self._nlip_data):
+        if self._nlip_len > len(self._nlip_data):
             return None
 
         payload = self._nlip_data
@@ -116,25 +114,27 @@ class NlipPkt:
         assert self._nlip_len is not None
         data = base64.b64decode(b64data)
         self._nlip_data.extend(data)
+        return self._try_consume_payload()
 
     def parse_line(self, line):
         # ignore empty line
         if not line:
             return None
 
-        self._buf.extend(line)
-        if len(self._buf) < 2:
-            logger.debug("need more then 2 bytes")
+        buf = bytearray()
+        buf.extend(line)
+        if len(buf) < 2:
+            logger.debug("need more than 2 bytes")
             return None
 
-        s1 = self._buf[0]
-        s2 = self._buf[1]
+        s1 = buf[0]
+        s2 = buf[1]
 
         if s1 == NLIP_OP.PKT_START1 and s2 == NLIP_OP.PKT_START2:
-            return self._parse_b64_pkt(self._buf[2:])
+            return self._parse_b64_pkt(buf[2:])
 
         if s1 == NLIP_OP.DATA_START1 and s2 == NLIP_OP.DATA_START2:
-            return self._parse_b64_sub(self._buf[2:])
+            return self._parse_b64_sub(buf[2:])
 
         # not an error as nlip packets mixed with other types of data.
         logger.debug("Ignoring unknown start sequence '%02x %02x'", s1, s2)
