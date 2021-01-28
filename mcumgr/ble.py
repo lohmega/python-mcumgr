@@ -1,13 +1,14 @@
 import asyncio
-#import concurrent.futures
 import logging
 import platform
+from queue import Queue
+import signal
+from threading import Thread
+# third party imports
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
-import smp
-from queue import Queue
-from threading import Thread
-import signal
+# local imports
+from mcumgr import smp
 
 # mcumgr or newtmgr can be used over BLE with the following GATT service and
 # characteristic UUIDs to connect to a SMP server running on the target device:

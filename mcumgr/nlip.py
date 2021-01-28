@@ -4,9 +4,11 @@ from enum import IntEnum
 import logging
 import struct
 import base64
+# third party imports
 import crcmod.predefined
 import serial
-import smp
+# local imports
+from mcumgr import smp
 
 logger = logging.getLogger(__name__)
 

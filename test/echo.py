@@ -1,12 +1,12 @@
-
-import signal
 import logging
-import ble
-import nlip
-import smp
 import sys
+import os
 import cbor
 
+import utils
+utils.use_repo_sources(True)
+
+from mcumgr import smp, ble, nlip
 
 
 def set_verbose(verbose_level):
@@ -52,7 +52,7 @@ def main():
             rsp = clnt.read_msg()
 
     else:
-        with nlip.SMPClientNlip(device="/dev/ttyUSB1", baudrate="115200", timeout=10) as clnt:
+        with nlip.SMPClientNlip(device="/dev/ttyUSB0", baudrate="115200", timeout=10) as clnt:
             clnt.write_msg(req)
             rsp = clnt.read_msg()
 
