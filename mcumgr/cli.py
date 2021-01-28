@@ -134,7 +134,7 @@ def main():
     logger.debug("args={}".format(args))
 
     if args.get("version"):
-        print_versions()
+        # TODO print_versions()
         exit(0)
 
     actionfunc = args.get("_actionfunc")

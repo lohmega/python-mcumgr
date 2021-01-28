@@ -133,13 +133,15 @@ class MgmtHdr:
         return 8
 
     def __init__(self, nh_op=0, nh_flags=0, nh_len=0, nh_group=0, nh_seq=0, nh_id=0):
-
-        self.nh_op = nh_op & 0x03
+        # fmt: off
+        self.nh_op    = nh_op & 0x03
         self.nh_flags = nh_flags
-        self.nh_len = nh_len
+        self.nh_len   = nh_len
         self.nh_group = nh_group
-        self.nh_seq = nh_seq
-        self.nh_id = nh_id
+        self.nh_seq   = nh_seq
+        self.nh_id    = nh_id
+        # fmt: on
+
 
     # B = uint8, H = uint16, > = big endian
     _STRUCT_FMT = ">BBHHBB"
@@ -166,9 +168,16 @@ class MgmtHdr:
 
 
 class MgmtMsg:
-    def __init__(self, hdr=MgmtHdr(), payload=bytearray()):
+    """
+    MgmtMsg base class that only operates on bytes payload
+    """
+    def __init__(self, hdr=MgmtHdr(), payload=bytearray(), **kwargs):
         self.hdr = hdr
-        self.payload = None
+        # note that nh_len excluded here
+        for nh in ["nh_op", "nh_flags", "nh_group", "nh_seq", "nh_id"]:
+            if nh in kwargs:
+                setattr(self.hdr, nh, kwargs.get(nh))
+
         self.set_payload(payload)
 
     @property
