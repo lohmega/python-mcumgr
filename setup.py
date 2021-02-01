@@ -4,7 +4,7 @@ import os
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
 
 VERSION = None
-with open(os.path.join(THIS_DIR, "bblogger", "__version__.py")) as f:
+with open(os.path.join(THIS_DIR, "mcumgr", "__version__.py")) as f:
     tmp_dict = {}
     exec(f.read(), tmp_dict)
     VERSION = tmp_dict["__version__"]

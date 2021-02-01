@@ -11,7 +11,7 @@ Install
 ```
 python3 -m pip install git+https://git@github.com/lohmega/python-mcumgr.git
 ```
-
+(if private repo, replace `git+https` with `git+ssh`)
 
 
 
