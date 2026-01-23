@@ -5,6 +5,7 @@
 
 from enum import Enum, IntEnum
 import struct
+import cbor
 import logging
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,13 @@ class MgmtMsg:
         hdr_size = MgmtHdr.BYTE_SIZE if self.hdr else 0
         payload_size = len(self.payload) if self.payload else 0
         return hdr_size + payload_size
+
+    def encode_payload(self, data_dict):
+        data = cbor.dumps(data_dict)
+        self.set_payload(data)
+
+    def decode_payload(self):
+        return cbor.loads(self.payload)
 
     def set_payload(self, obj):
         if obj is None:

@@ -207,7 +207,7 @@ class SMPClientBLE:
         self.disconnect()
 
     def connect(self):
-            
+
         dev = find_device(self._address, self._name, self._timeout)
         if not dev:
             raise RuntimeError("Device not found")

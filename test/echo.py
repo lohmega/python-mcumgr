@@ -45,14 +45,16 @@ def main():
     data = cbor.dumps({"d": "hello" })
     data = cbor.dumps({"d": "hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello" })
     req.set_payload(data)
-    
-    if (0):
-        with ble.SMPClientBLE(name="hwt_lmin-0000", timeout=10) as clnt:
+
+    if 0:
+        with ble.SMPClientBLE(name="semafor", timeout=10) as clnt:
             clnt.write_msg(req)
             rsp = clnt.read_msg()
 
     else:
-        with nlip.SMPClientNlip(device="/dev/ttyUSB0", baudrate="115200", timeout=10) as clnt:
+        port="/dev/serial/by-id/usb-ZEPHYR_SMP_Dongle_48177A152FF0F9E2-if02"
+        #"/dev/ttyUSB0"
+        with nlip.SMPClientNlip(device=port, baudrate="115200", timeout=10) as clnt:
             clnt.write_msg(req)
             rsp = clnt.read_msg()
 

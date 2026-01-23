@@ -29,7 +29,7 @@ class NlipPkt:
     # TODO handle crc in unpack
     """ NLIP packet parser .
     comment from:
-    https://github.com/apache/mynewt-core/blob/master/sys/shell/src/shell_nlip.c       
+    https://github.com/apache/mynewt-core/blob/master/sys/shell/src/shell_nlip.c
 
     /* NLIP packets sent over serial are fragmented into frames of 127 bytes or
      * fewer. This 127-byte maximum applies to the entire frame, including header,
@@ -42,15 +42,15 @@ class NlipPkt:
     '''
          putc(PKT_START1);
          putc(PKT_START2);
-        
+
          BASE64_ENCODE_BEGIN();
 
          put_u16be(tot_pkt_size); // 16-bit big endian
          // i.e. if input to this python parser/unpacker/decoder
-         if (MYNEWT_MCU_TX) 
-            put_u16be(crc); // 16-bit crc of packet 
+         if (MYNEWT_MCU_TX)
+            put_u16be(crc); // 16-bit crc of packet
          BASE64_ENCODE_END();
-        
+
          putc('\n'); // LF
 
          // if data do not fit in first line packet
@@ -65,12 +65,12 @@ class NlipPkt:
 
                // i.e. if output from this python packer/encoder
                if (MYNEWT_MCU_RX && is_last_chunk())
-                  put_u16be(crc); // 16-bit crc of packet 
+                  put_u16be(crc); // 16-bit crc of packet
 
                BASE64_ENCODE_END();
 
                putc('\n'); // LF
-         }   
+         }
     ```
     """
     # max line length total including LF
