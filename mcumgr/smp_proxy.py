@@ -91,26 +91,41 @@ class SmpProxyTransport:
             MgmtMsg: Unwrapped SMP response message
 
         Raises:
-            RuntimeError: If proxy returns an error code
+            SMPTransportError: If proxy response is invalid or malformed
+            MgmtEndpointError: If proxy returns an error code
         """
         # Read proxy response from base transport
-        proxy_response = self.base_transport.read_msg(timeout)
+        msg = self.base_transport.read_msg(timeout)
+
+        # Validate this is a proxy forward response
+        if msg.hdr.nh_group != MGMT_GROUP_ID_PROXY_FWD_MGMT:
+            raise smp.SMPTransportError(
+                f"Expected proxy forward response (group={MGMT_GROUP_ID_PROXY_FWD_MGMT}), "
+                f"got group={msg.hdr.nh_group}"
+            )
+
+        if msg.hdr.nh_id != PROXY_FWD_MGMT_ID_FWD:
+            raise smp.SMPTransportError(
+                f"Expected proxy forward response (id={PROXY_FWD_MGMT_ID_FWD}), "
+                f"got id={msg.hdr.nh_id}"
+            )
 
         # Decode CBOR payload
-        if not proxy_response.payload:
-            raise RuntimeError("Empty proxy response payload")
+        if not msg.payload:
+            raise smp.SMPTransportError("Empty proxy response payload")
 
-        proxy_data = cbor.loads(proxy_response.payload)
+        proxy_data = cbor.loads(msg.payload)
 
         # Check for proxy-level error
         if "rc" in proxy_data:
             rc = proxy_data["rc"]
             if rc != 0:
-                raise RuntimeError(f"Proxy error: rc={rc}")
+                rsn = proxy_data.get("rsn")
+                raise smp.MgmtEndpointError("Proxy forwarding failed", rc=rc, rsn=rsn)
 
         # Extract the wrapped SMP message data
         if PROXY_MGMT_KEY_DATA not in proxy_data:
-            raise RuntimeError("No data field in proxy response (possible timeout)")
+            raise smp.SMPTransportError("No data field in proxy response (possible timeout)")
 
         original_msg_bytes = proxy_data[PROXY_MGMT_KEY_DATA]
 

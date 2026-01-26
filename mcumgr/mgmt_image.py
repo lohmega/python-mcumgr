@@ -2,6 +2,7 @@
 
 from . import smp
 from .mgmt import MgmtGrpBase, MgmtGrpEndpoint
+from .smp import MgmtEndpointError
 
 
 # Image Management Command IDs
@@ -47,7 +48,7 @@ class MgmtGrpImage(MgmtGrpBase):
 
         Raises:
             FileNotFoundError: If image file doesn't exist
-            RuntimeError: If upload fails
+            MgmtEndpointError: If upload fails with error code
         """
         import os
         import time
@@ -85,7 +86,9 @@ class MgmtGrpImage(MgmtGrpBase):
 
                 # Check for errors
                 if "rc" in response and response["rc"] != 0:
-                    raise RuntimeError(f"Upload failed at offset {offset}: rc={response['rc']}")
+                    rc = response["rc"]
+                    rsn = response.get("rsn")
+                    raise MgmtEndpointError(f"Upload failed at offset {offset}", rc=rc, rsn=rsn)
 
                 # Update offset from response
                 if "off" in response:

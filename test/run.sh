@@ -17,10 +17,10 @@ _realpath()
 # Absolute path to this script
 SCRIPT=$(_realpath "$0")
 # Absolute path this script is in
-SCRIPTPATH=$(dirname "$SCRIPT")
-BASEPATH=$(realpath "$SCRIPTPATH/../")
+THIS_DIR=$(dirname "$SCRIPT")
+BASE_DIR=$(realpath "$THIS_DIR/../")
 
-PYTHONPATH="$SCRIPTPATH:$PYTHONPATH" 
+PYTHONPATH="$BASE_DIR:$PYTHONPATH" 
 
 # you can verify import paths with the following command
 # PYTHONPATH="$PYTHONPATH" python3 -v $MCUMGR -h 2>&1 

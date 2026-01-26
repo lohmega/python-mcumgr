@@ -15,12 +15,65 @@ MGMT_MAX_MTU = 1024
 
 def _enum2str(enumclass, val):
     """
-    enumclass - a Enum class, either instance or class 
+    enumclass - a Enum class, either instance or class
     """
     try:
         return enumclass(val).name
     except ValueError:
         return "{}.<unknown {}>".format(enumclass.__name__, val)
+
+
+# Exception Classes
+class SMPError(Exception):
+    """Base exception for all SMP-related errors"""
+    pass
+
+
+class SMPTransportError(SMPError):
+    """Transport-level errors (connection, communication failures)"""
+    pass
+
+
+class MgmtEndpointError(SMPError):
+    """Management endpoint command errors with rc codes"""
+
+    def __init__(self, message, rc=None, rsn=None):
+        """
+        Initialize management endpoint error.
+
+        Args:
+            message: Error message
+            rc: Error code from response (optional)
+            rsn: Reason string from response (optional)
+        """
+        super().__init__(message)
+        self.rc = rc
+        self.rsn = rsn
+        self.error_name = None
+
+        # Get symbolic name for error code if available
+        if rc is not None:
+            # Import locally to avoid circular dependency
+            # MGMT_ERR will be defined later in this file
+            try:
+                self.error_name = MGMT_ERR.int_to_str(rc)
+            except:
+                self.error_name = f"UNKNOWN({rc})"
+
+    def __str__(self):
+        """Format error with all available context"""
+        parts = [super().__str__()]
+
+        if self.rc is not None:
+            if self.error_name:
+                parts.append(f"rc={self.rc} ({self.error_name})")
+            else:
+                parts.append(f"rc={self.rc}")
+
+        if self.rsn:
+            parts.append(f"reason: {self.rsn}")
+
+        return " | ".join(parts)
 
 
 class MGMT_OP(IntEnum):
@@ -32,6 +85,11 @@ class MGMT_OP(IntEnum):
     WRITE         = 2
     WRITE_RSP     = 3
     # fmt: on
+
+    @staticmethod
+    def int_to_str(val):
+        """Convert opcode integer to string name"""
+        return _enum2str(MGMT_OP, val)
 
 
 class MGMT_GROUP_ID(IntEnum):
@@ -53,6 +111,11 @@ class MGMT_GROUP_ID(IntEnum):
     PERUSER = 64
     # fmt: on
 
+    @staticmethod
+    def int_to_str(val):
+        """Convert group ID integer to string name"""
+        return _enum2str(MGMT_GROUP_ID, val)
+
 
 class MGMT_ERR(IntEnum):
     """ mcumgr error codes """
@@ -68,8 +131,15 @@ class MGMT_ERR(IntEnum):
     EMSGSIZE     = 7       #/* Response too large. */
     ENOTSUP      = 8       #/* Command not supported. */
     ECORRUPT     = 9       #/* Corrupt */
+    EBUSY        = 10      #/* Resource busy. */
+    EACCESSDENIED = 11     #/* Access denied. */
     EPERUSER     = 256
     # fmt: on
+
+    @staticmethod
+    def int_to_str(val):
+        """Convert error code integer to string name"""
+        return _enum2str(MGMT_ERR, val)
 
 
 class MGMT_EVT_OP(IntEnum):
@@ -80,6 +150,11 @@ class MGMT_EVT_OP(IntEnum):
     CMD_STATUS       =  0x02
     CMD_DONE         =  0x03
     # fmt: on
+
+    @staticmethod
+    def int_to_str(val):
+        """Convert event opcode integer to string name"""
+        return _enum2str(MGMT_EVT_OP, val)
 
 
 class Mynewt:
@@ -94,6 +169,11 @@ class Mynewt:
         DATETIME_STR   = 4
         RESET          = 5
         # fmt: on
+
+        @staticmethod
+        def int_to_str(val):
+            """Convert OS management ID integer to string name"""
+            return _enum2str(Mynewt.OS_MGMT_ID, val)
 
     """
     #define OS_MGMT_TASK_NAME_LEN       32
@@ -174,6 +254,7 @@ class MgmtMsg:
     """
     def __init__(self, hdr=MgmtHdr(), payload=bytearray(), **kwargs):
         self.hdr = hdr
+        self.payload = None
         # note that nh_len excluded here
         for nh in ["nh_op", "nh_flags", "nh_group", "nh_seq", "nh_id"]:
             if nh in kwargs:

@@ -41,7 +41,9 @@ def main():
     parser.add_argument("--port",
                         default='/dev/serial/by-id/usb-ZEPHYR_SMP_Dongle_*-if02',
                         help="Serial port for proxy device, supports glob patterns (default: %(default)s)")
-    parser.add_argument("--ble-name", required=True, help="BLE device name to scan for and connect to")
+    parser.add_argument("--ble-name", 
+                        default="sem-lb", 
+                        help="BLE device name to scan for and connect to")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     parser.add_argument("--baudrate", default="115200", help="Serial baudrate (default: 115200)")
     parser.add_argument("--timeout", type=int, default=10, help="Timeout in seconds (default: 10)")
@@ -75,43 +77,39 @@ def main():
         # because these commands are directed AT the proxy device itself, not forwarded through it
         ble_proxy = MgmtGrpProxyBle(base_transport)
 
+        # Ensure scanning is stopped before setting filters (prevents EBUSY error)
+        ble_proxy.scan_stop()
+
         # Set scan filter to the target BLE device name
         logger.info(f"Setting scan filter to: {args.ble_name}")
-        filter_rsp = ble_proxy.mh_scan_filter.mh_write({
+        ble_proxy.scan_filter_set({
             "index": 0,
             "name": args.ble_name
         })
-        logger.debug(f"Scan filter response: {filter_rsp}")
 
-        filter_rsp = ble_proxy.mh_scan_filter.mh_read()
-        logger.debug(f"Scan filter read: {filter_rsp}")
-
-        # Start BLE scan
+        # Scan for the target device
         logger.info("Starting BLE scan...")
-        scan_ctl_rsp = ble_proxy.mh_scan_ctl.mh_write({
-            "enable": True
-        })
-        logger.info(f"Scan control response: {scan_ctl_rsp}")
+        target_device = None
 
-        # Read scan results
-        logger.info("Reading scan results...")
-        scan_result_rsp = ble_proxy.mh_scan_result.mh_read()
-        logger.info(f"Scan results: {scan_result_rsp}")
+        def on_device(dev):
+            nonlocal target_device
+            logger.info(f"Found device: {dev.get('name')} at 0x{dev.get('address'):x} (RSSI: {dev.get('rssi')})")
+            if dev.get('name') == args.ble_name:
+                target_device = dev
+                return True  # Stop scanning
+            return False  # Continue scanning
+
+        results = ble_proxy.scan(result_cb=on_device, timeout=args.timeout)
 
         # Extract device address from scan results
-        if "devices" in scan_result_rsp and len(scan_result_rsp["devices"]) > 0:
-            target_device = scan_result_rsp["devices"][0]
-            target_addr = target_device.get("a")  # "a" is the address key
+        if target_device:
+            target_addr = target_device.get("address")
             logger.info(f"Found target device: {target_device}")
             logger.info(f"Target address: 0x{target_addr:x}")
 
             # Connect to the target device
             logger.info(f"Connecting to target device at 0x{target_addr:x}...")
-            conn_rsp = ble_proxy.mh_conn_ctl.mh_write({
-                "connect": True,
-                "a": target_addr,
-                "w": 5000  # 5 second timeout
-            })
+            conn_rsp = ble_proxy.connect(address=target_addr, wait=5000)
             logger.info(f"Connection response: {conn_rsp}")
 
             # Check connection status
@@ -125,10 +123,6 @@ def main():
         else:
             logger.error(f"No devices found matching name '{args.ble_name}'")
             return 1
-
-        # Stop scanning
-        logger.info("Stopping BLE scan...")
-        ble_proxy.mh_scan_ctl.mh_write({"enable": False})
 
         logger.info("Test completed successfully")
         return 0
