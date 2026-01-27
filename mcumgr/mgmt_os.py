@@ -17,9 +17,9 @@ class OS_MGMT_ID(IntEnum):
     @staticmethod
     def int_to_str(val):
         try:
-            return enumclass(val).name
+            return OS_MGMT_ID(val).name
         except ValueError:
-            return "{}.<unknown {}>".format(enumclass.__name__, val)
+            return "{}.<unknown {}>".format(OS_MGMT_ID.__name__, val)
 
 class MgmtGrpOs(MgmtGrpBase):
     """OS Management Group"""

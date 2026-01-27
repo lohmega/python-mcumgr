@@ -3,6 +3,7 @@
 import cbor
 import logging
 from . import smp
+from .mgmt_proxy_ble import MgmtGrpProxyBle
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class SmpProxyTransport:
     - wait: optional timeout for response in milliseconds
     """
 
-    def __init__(self, base_transport, media, address, timeout=5000):
+    def __init__(self, base_transport, address, media="ble", timeout=5000):
         """
         Initialize proxy transport wrapper.
 
@@ -45,7 +46,19 @@ class SmpProxyTransport:
         self.media = media
         self.address = address
         self.timeout = timeout
+        # sequence for communication with the end device (not the proxy itself)
         self._seq = 0
+        assert(media == "ble")
+        self.ble = MgmtGrpProxyBle(base_transport)
+
+    def connect(self):
+        if not self.base_transport.is_connected():
+            raise RuntimeError("base tranport not connected - can not communicate with proxy")
+
+        return self.ble.connect(self.address, self.timeout)
+
+    def disconnect(self):
+        return self.ble.disconnect()
 
     def write_msg(self, msg):
         """
@@ -133,6 +146,20 @@ class SmpProxyTransport:
 
         # Parse and return the original SMP message
         return smp.MgmtMsg.from_bytes(original_msg_bytes)
+
+
+    def __enter__(self):
+        """Context manager entry - connect to target device via proxy"""
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - disconnect from target device"""
+        try:
+            self.disconnect()
+        except Exception as e:
+            logger.warning(f"Error during disconnect: {e}")
+        return False
 
     def __getattr__(self, name):
         """Delegate all other attributes/methods to base transport"""

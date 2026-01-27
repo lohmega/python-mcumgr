@@ -15,7 +15,6 @@ SMP_PROXY_ID_BLE_CONN_CTL = 1
 SMP_PROXY_ID_BLE_SCAN_RESULT = 2
 SMP_PROXY_ID_BLE_SCAN_CTL = 3
 SMP_PROXY_ID_BLE_SCAN_FILTER = 4
-SMP_PROXY_ID_BLE_DISCONNECT = 5
 
 def _rename_key(data, from_key, to_key):
 
@@ -41,7 +40,6 @@ class MgmtGrpProxyBle(MgmtGrpBase):
         self.mh_scan_result = MgmtGrpEndpoint(transport, self.nh_group, SMP_PROXY_ID_BLE_SCAN_RESULT)
         self.mh_scan_ctl = MgmtGrpEndpoint(transport, self.nh_group, SMP_PROXY_ID_BLE_SCAN_CTL)
         self.mh_scan_filter = MgmtGrpEndpoint(transport, self.nh_group, SMP_PROXY_ID_BLE_SCAN_FILTER)
-        self.mh_disconnect = MgmtGrpEndpoint(transport, self.nh_group, SMP_PROXY_ID_BLE_DISCONNECT)
 
 
     def scan_start(self):
@@ -93,6 +91,7 @@ class MgmtGrpProxyBle(MgmtGrpBase):
     def _scan_result_poll(self, result_cb=None, timeout=None, poll_interval=0.5):
         start_time = time.time()
         # Poll for results until timeout or callback requests stop
+        ret = []
         while True:
             if timeout:
                 elapsed = time.time() - start_time
@@ -100,15 +99,19 @@ class MgmtGrpProxyBle(MgmtGrpBase):
                     logger.debug("scan poll timeout")
                     return None
             # Get current scan results
-            results = self.scan_result()
-            results = _rename_keys(results, 'a', 'address')
-            if result_cb:
-                for device in results:
-                    # Call callback if provided
-                     if result_cb(device):
-                        return results
-            elif results:
-                return results
+            candidates = self.scan_result()
+            candidates = _rename_keys(candidates, 'a', 'address')
+
+            for candidate in candidates:
+                keep = True
+                if result_cb:
+                    keep = result_cb(candidate)
+
+                if keep:
+                    ret.append(candidate)
+
+            if ret:
+                return ret
 
             # Wait before next poll
             time.sleep(poll_interval)
@@ -162,18 +165,9 @@ class MgmtGrpProxyBle(MgmtGrpBase):
 
     def connect(self, address, wait=None):
         """
-        Connect to a BLE device.
-
-        Args:
-            address: Device BLE address (uint64)
-            wait: Optional timeout in milliseconds to wait for connection
-
-        Returns:
-            dict: Connection response with status information
-
-        Raises:
-            RuntimeError: If connection fails
+        Connect the proxy to a BLE device.
         """
+
         req = {
             "connect": True,
             "a": address,
@@ -182,21 +176,16 @@ class MgmtGrpProxyBle(MgmtGrpBase):
         if wait:
             req["w"] = wait
 
-        return self.mh_conn_ctl.mh_write(req, check=True)
+        logger.info(f"Connecting to at 0x{address:x}...")
+        rsp = self.mh_conn_ctl.mh_write(req, check=True)
+        if not rsp.get("connected", None):
+            raise smp.SMPTransportError("Failed to connect {}".format(rsp))
+        return rsp
+
 
     def disconnect(self):
-        """
-        Disconnect from the current BLE device.
-
-        Returns:
-            dict: Disconnect response
-
-        Raises:
-            RuntimeError: If disconnect fails
-        """
         req = {
             "connect": False,
         }
 
         return self.mh_conn_ctl.mh_write(req, check=False)
-

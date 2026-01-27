@@ -13,12 +13,17 @@ import sys
 import os
 
 import utils
+from pprint import pprint
 utils.use_repo_sources(True)
 
-from mcumgr import nlip, smp
+from mcumgr.transport_serial import SMPTransportSerial
+from mcumgr import smp
 from mcumgr.smp_proxy import SmpProxyTransport
 from mcumgr.mgmt_proxy_ble import MgmtGrpProxyBle
+from mcumgr.mgmt_image import MgmtGrpImage
 
+
+logger = logging.getLogger(__name__)
 
 def setup_logging(verbose_level):
     """Configure logging based on verbosity level"""
@@ -34,6 +39,40 @@ def setup_logging(verbose_level):
         format="%(levelname)s:%(name)s:%(lineno)d: %(message)s",
         stream=sys.stderr
     )
+
+def scan(base_transport, scan_filters=[], timeout=8*1000):
+    assert base_transport.is_connected()
+
+    # Create BLE proxy management interface
+    # Note: We use the base transport directly (not wrapped) for BLE proxy control commands
+    # because these commands are directed AT the proxy device itself, not forwarded through it
+    ble = MgmtGrpProxyBle(base_transport)
+
+    # Ensure scanning is stopped before setting filters (prevents EBUSY error)
+    ble.scan_stop()
+
+    # Set scan filter to the target BLE device name
+    ble.scan_filter_set(scan_filters)
+
+    # Scan for the target device
+    logger.info("Starting BLE scan...")
+
+    def on_scan_result(result):
+        return True  # Stop scanning
+
+    results = ble.scan(result_cb=on_scan_result, timeout=timeout)
+
+    # Extract device address from scan results
+    if not results:
+        logger.error(f"No devices found matching filters")
+        return None
+
+    return results
+
+def proy_fwd_transport(base_transport, address):
+    assert base_transport.is_connected()
+
+    return SmpProxyTransport(base_transport, address=address, media="ble")
 
 
 def main():
@@ -67,65 +106,25 @@ def main():
 
     port = matched_ports[0]
     logger.info(f"Connecting to proxy device on {port}")
+    # transport to communicate with the proxy itself
+    scan_filters = { "index": 0, "name": args.ble_name }
 
-    # Connect to proxy device via NLIP
-    with nlip.SMPClientNlip(device=port, baudrate=args.baudrate, timeout=args.timeout) as base_transport:
-        logger.info("Connected to proxy device")
+    base_tp = SMPTransportSerial(port=port, baudrate=args.baudrate, timeout=args.timeout)
+    with base_tp:
+        res = scan(base_tp, scan_filters)
 
-        # Create BLE proxy management interface
-        # Note: We use the base transport directly (not wrapped) for BLE proxy control commands
-        # because these commands are directed AT the proxy device itself, not forwarded through it
-        ble_proxy = MgmtGrpProxyBle(base_transport)
+        print("scan result:")
+        pprint(res)
+        if not res:
+            return
+        address=res[0].get("address", None)
 
-        # Ensure scanning is stopped before setting filters (prevents EBUSY error)
-        ble_proxy.scan_stop()
+        fwd_tp = SmpProxyTransport(base_tp, address=address, media="ble")
+        with fwd_tp:
+            img = MgmtGrpImage(fwd_tp)
+            pprint(img.get_state())
 
-        # Set scan filter to the target BLE device name
-        logger.info(f"Setting scan filter to: {args.ble_name}")
-        ble_proxy.scan_filter_set({
-            "index": 0,
-            "name": args.ble_name
-        })
 
-        # Scan for the target device
-        logger.info("Starting BLE scan...")
-        target_device = None
-
-        def on_device(dev):
-            nonlocal target_device
-            logger.info(f"Found device: {dev.get('name')} at 0x{dev.get('address'):x} (RSSI: {dev.get('rssi')})")
-            if dev.get('name') == args.ble_name:
-                target_device = dev
-                return True  # Stop scanning
-            return False  # Continue scanning
-
-        results = ble_proxy.scan(result_cb=on_device, timeout=args.timeout)
-
-        # Extract device address from scan results
-        if target_device:
-            target_addr = target_device.get("address")
-            logger.info(f"Found target device: {target_device}")
-            logger.info(f"Target address: 0x{target_addr:x}")
-
-            # Connect to the target device
-            logger.info(f"Connecting to target device at 0x{target_addr:x}...")
-            conn_rsp = ble_proxy.connect(address=target_addr, wait=5000)
-            logger.info(f"Connection response: {conn_rsp}")
-
-            # Check connection status
-            if conn_rsp.get("connected"):
-                logger.info("Successfully connected to target device!")
-                logger.info(f"Connection details: {conn_rsp}")
-            else:
-                logger.error("Failed to connect to target device")
-                return 1
-
-        else:
-            logger.error(f"No devices found matching name '{args.ble_name}'")
-            return 1
-
-        logger.info("Test completed successfully")
-        return 0
 
 
 if __name__ == "__main__":

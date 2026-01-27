@@ -1,8 +1,11 @@
+from . import smp
+from .mgmt_os import OS_MGMT_ID
 
 
 class MgmtGroupCmd():
-    def __init__(self, nh_group):
+    def __init__(self, transport, nh_group):
         self.transport = transport
+        self.nh_group = nh_group
 
 
 def _get_rsp_rc(rsp):
@@ -12,7 +15,7 @@ def _get_rsp_rc(rsp):
     return None
 
 
-def cmd(transport, req):
+def cmd(transport, req, string):
 
     req.encode_payload({"d": string })
 
@@ -24,7 +27,7 @@ def cmd(transport, req):
     if rsp.hdr.nh_id != req.hdr.nh_id:
         raise Exception()
 
-    if req.no_op == smp.MGMT_OP.WRITE:
+    if req.hdr.nh_op == smp.MGMT_OP.WRITE:
         rc = _get_rsp_rc(rsp)
         if rc != 0:
             raise Exception("write response rc={}".format(rc) )
@@ -33,10 +36,10 @@ def cmd(transport, req):
 
 def os_echo(transport, string):
 
-    req = smp.mgmtmsg()
+    req = smp.MgmtMsg()
     req.hdr.nh_group = smp.MGMT_GROUP_ID.OS
     req.hdr.nh_op = smp.MGMT_OP.READ
-    req.hdr.nh_id = smp.Mynewt.OS_MGMT_ID.ECHO
+    req.hdr.nh_id = OS_MGMT_ID.ECHO
 
     req.encode_payload({"d": string })
 

@@ -3,7 +3,10 @@ import argparse
 import sys
 import cbor
 
-from mcumgr import smp, ble, nlip
+from mcumgr import smp
+from mcumgr import transport_serial, transport_ble
+from mcumgr.transport_serial import SMPTransportSerial
+from mcumgr.transport_ble import SMPTransportBLE
 
 logger = logging.getLogger(__name__)
 
@@ -94,14 +97,16 @@ parser.add_argument(
 parser.add_argument('commands', nargs=argparse.REMAINDER)
 
 def _set_verbose(verbose_level):
-    loggers = [logger, ble.logger, smp.logger, nlip.logger]
+    loggers = [logger, transport_ble.logger, smp.logger, transport_serial.logger]
 
     if verbose_level <= 1:
         level = logging.WARNING
-    if verbose_level == 2:
+    elif verbose_level == 2:
         level = logging.INFO
     elif verbose_level >= 3:
         level = logging.DEBUG
+    else:
+        level = logging.WARNING
 
     if verbose_level >= 4:
         bleak_logger = logging.getLogger("bleak")
@@ -264,14 +269,14 @@ def main():
 
 
     if args.transport == "ble":
-        transport = ble.SMPClientBLE(name=args.ble_name, timeout=args.timeout)
+        transport = SMPTransportBLE(name=args.ble_name, timeout=args.timeout)
     elif args.transport in ["serial", "nlip"]:
-        transport = nlip.SMPClientNlip(
+        transport = SMPTransportSerial(
                             device=args.interface,
                             baudrate=args.baud,
                             timeout=args.timeout)
     else:
-        raise argparse.ArgumentError("Unknown transport")
+        raise argparse.ArgumentTypeError("Unknown transport")
 
     #req = _mk_echo_req()
     req = _mk_image_state_req()

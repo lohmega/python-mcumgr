@@ -33,6 +33,14 @@ class MgmtGrpImage(MgmtGrpBase):
         self.mh_erase = MgmtGrpEndpoint(transport, self.nh_group, IMG_MGMT_ID_ERASE)
 
 
+    def get_state(self):
+        """
+        Returns: Example
+{'images': [{'slot': 0, 'version': '0.4.2', 'hash': b'y\x9bL(\x81\xd6\x87 Jck\xb5#\xc7\x89\x8c@\xea\x0f\x1a[\x19\x9d\xbd\x1f7\xb1\t\x84\xb9$\xb7', 'bootable': True, 'pending': False, 'confirmed': True, 'active': True, 'permanent': False}, {'slot': 1, 'version': '0.4.1', 'hash': b'\x05\x11\r9\xe2\xcc\x89\x84V[\xcb\xe6\xbeo3\xed\x18P\xcb\x07Y\x99\\\x7f=W\x9c\x05\x01T\xd5;', 'bootable': True, 'pending': False, 'confirmed': False, 'active': False, 'permanent': False}], 'splitStatus': 0}
+
+        """
+        return self.mh_state.mh_read()
+
     def upload(self, file_path, slot=0, progress_callback=None):
         """
         Upload a firmware image to the device.

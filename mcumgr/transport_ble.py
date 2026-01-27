@@ -177,7 +177,9 @@ def find_device(address=None, name=None, timeout=10):
     return None
 
 
-class SMPClientBLE:
+class SMPTransportBLE:
+    """BLE transport for SMP protocol using GATT characteristics"""
+
     def __init__(
         self, address=None, name=None, timeout=10, read_cb=None, *args, **kwargs
     ):
@@ -282,3 +284,6 @@ class SMPClientBLE:
 
         return self._read_msg_q.get(timeout=timeout)
 
+
+# Backward compatibility alias
+SMPClientBLE = SMPTransportBLE

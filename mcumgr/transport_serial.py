@@ -212,20 +212,21 @@ class NlipPkt:
         return bytes().join(lines)
 
 
-class SMPClientNlip:
+class SMPTransportSerial:
+    """Serial transport for SMP protocol using NLIP framing"""
 
     MAX_DATA_PER_LINE = 120
 
     def __init__(
-        self, device=None, baudrate=115200, timeout=10, read_cb=None, *args, **kwargs
+        self, port=None, baudrate=115200, timeout=10, read_cb=None, *args, **kwargs
     ):
         """ warning: if param read_cb is provided it will be called from reader thread. 
         safer to use blocking read with a timeout to consume incomming messages.
         """
-        if device is None:
-            raise ValueError("No device identifier. Need address or name")
+        if port is None:
+            raise ValueError("No serial port device provided")
 
-        self._device = device
+        self._port = port
         self._baudrate = baudrate
         self._timeout = timeout
         self._read_cb = read_cb
@@ -274,7 +275,7 @@ class SMPClientNlip:
 
     def connect(self):
         self._ser = serial.Serial(
-            self._device, baudrate=self._baudrate, timeout=self._timeout
+            self._port, baudrate=self._baudrate, timeout=self._timeout
         )
         self._read_thread = Thread(
             target=self._read_thread_worker,
@@ -320,3 +321,6 @@ class SMPClientNlip:
             raise itm
         return itm
 
+
+# Backward compatibility alias
+SMPClientNlip = SMPTransportSerial
