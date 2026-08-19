@@ -1,289 +1,311 @@
-import logging
-import argparse
-import sys
-import cbor2 as cbor
+"""Command line front end for the mcumgr/newtmgr SMP protocol.
 
-from mcumgr import smp
-from mcumgr import transport_serial, transport_ble
-from mcumgr.transport_serial import SMPTransportSerial
-from mcumgr.transport_ble import SMPTransportBLE
+    mcumgr --transport ble --ble-name sem-bb image state
+    mcumgr --transport serial --port /dev/ttyACM0 image upload fw.bin
+    mcumgr image dump fw.bin          # offline, no device needed
+"""
+
+import argparse
+import logging
+import sys
+
+from mcumgr import image, smp
+from mcumgr.__version__ import __version__
 
 logger = logging.getLogger(__name__)
 
-_str_to_mgmt_op = { str(v.name).lower() : v for v in smp.MGMT_OP }
-_str_to_mgmt_id = { str(v.name).lower() : v for v in smp.Mynewt.OS_MGMT_ID }
+EXIT_SUCCESS = 0
+EXIT_USER_ERROR = 1
+EXIT_TRANSPORT_ERROR = 2
+EXIT_RESPONSE_ERROR = 3
 
-parser = argparse.ArgumentParser(
-        description="MCUMGR microcontroller unit managarer tool")
-
-
-parser.add_argument(
-    #-l, --loglevel
-    "--verbose",
-    "-v",
-    default=0,
-    action="count",
-    help="Verbose output (-vvv for more verbosity)",
-)
-
-parser.add_argument(
-    "--version",
-    action="store_true",
-    default=False,
-    help="Show version info and exit"
-)
-
-parser.add_argument("--transport", "--conntype",
-    dest="transport",
-    choices=["serial", "ble", "nlip"],
-    type=str,
-    help="transport method. Bluetooth LE, (ble) serial nlip",
-)
-
-parser.add_argument(
-    #"--interface-dev",
-    "--port",
-    "--hci", # <--- newtmgr compat
-    type=str,
-    required=False,
-    dest="interface",
-    default=None,
-    help="transport interface device. serial port or BLE HCI device",
-)
-
-
-parser.add_argument(
-    "--interactive",
-    action="store_true",
-    default=False,
-    help="Run in interactive mode"
-)
-
-# TODO implement these
-""" 
-parser.add_argument('--mtu',
-    type=int,
-    default=None,
-    help="Maximum Transmission Unit (MTU) largest packet or frame size. Auto negotiated for BLE transport"
-)
-
-parser.add_argument('--hci', 
-        type=str,
-        help=argparse.SUPPRESS,
-        help="newtmgr compat. HCI index for the controller on Linux machine"
-)
-"""
-
-parser.add_argument(
-    "--baud",
-    type=int,
-    default=115200,
-    help="serial port baudrate",
-)
-
-parser.add_argument(
-    "--ble-name",
-    type=str,
-    help="BLE device name",
-)
-
-parser.add_argument(
-    "--timeout",
-    type=float,
-    default=10,
-    help="timeout in seconds",
-)
-
-parser.add_argument('commands', nargs=argparse.REMAINDER)
 
 def _set_verbose(verbose_level):
-    loggers = [logger, transport_ble.logger, smp.logger, transport_serial.logger]
+    from mcumgr import mgmt_image
 
-    if verbose_level <= 1:
-        level = logging.WARNING
+    loggers = [logger, smp.logger, mgmt_image.logger]
+
+    if verbose_level >= 3:
+        level = logging.DEBUG
     elif verbose_level == 2:
         level = logging.INFO
-    elif verbose_level >= 3:
-        level = logging.DEBUG
     else:
         level = logging.WARNING
 
     if verbose_level >= 4:
-        bleak_logger = logging.getLogger("bleak")
-        loggers.append(bleak_logger)
+        loggers.append(logging.getLogger("bleak"))
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter("%(levelname)s:%(name)s:%(lineno)d: %(message)s")
+    )
 
-    formatter = logging.Formatter("%(levelname)s:%(name)s:%(lineno)d: %(message)s")
-    handler.setFormatter(formatter)
+    # transport loggers only if the module is importable
+    for modname in ("transport_ble", "transport_serial"):
+        try:
+            mod = __import__("mcumgr." + modname, fromlist=["logger"])
+        except ImportError:
+            continue
+        loggers.append(mod.logger)
 
     for l in loggers:
         l.setLevel(level)
         l.addHandler(handler)
 
-g_nh_seq = 66
 
-def _do_cmd_shell(transport_client, line):
-    global g_nh_seq
-    # must be str or cbor dumps encode diffrently 
-    # (mcu side assumes UTF-8 encoded probably)
-    if not isinstance(line, str):
-        raise TypeError("must be str")
+def _mk_transport(args):
+    if args.transport == "ble":
+        from mcumgr.transport_ble import SMPTransportBLE
 
-    req = smp.MgmtMsg()
-    req.hdr.nh_op = smp.MGMT_OP.WRITE
-    req.hdr.nh_group = smp.MGMT_GROUP_ID.SHELL
-    req.hdr.nh_seq = g_nh_seq
-    g_nh_seq += 1
+        if not (args.ble_name or args.ble_addr):
+            raise argparse.ArgumentTypeError(
+                "ble transport needs --ble-name or --ble-addr"
+            )
+        return SMPTransportBLE(
+            address=args.ble_addr, name=args.ble_name, timeout=args.timeout
+        )
 
-    data = cbor.dumps({"argv": [line]})
-    req.set_payload(data)
+    if args.transport in ("serial", "nlip"):
+        from mcumgr.transport_serial import SMPTransportSerial
 
-    transport_client.write_msg(req)
-    rsp = transport_client.read_msg()
+        if not args.port:
+            raise argparse.ArgumentTypeError("serial transport needs --port")
+        return SMPTransportSerial(
+            port=args.port, baudrate=args.baud, timeout=args.timeout
+        )
 
-    if rsp.hdr.nh_seq != req.hdr.nh_seq:
-        raise RuntimeError("bad sequence nr")
-
-    rxd = cbor.loads(rsp.payload)
-
-    out = rxd["o"]
-    return out
+    raise argparse.ArgumentTypeError("Unknown transport '{}'".format(args.transport))
 
 
-def run_interactive_shell(transport):
-
-    req = smp.MgmtMsg()
-    #req.hdr.nh_op = args.mgmt_op
-    #req.hdr.nh_id = args.mgmt_id
-
-    req.hdr.nh_op = smp.MGMT_OP.WRITE
-    req.hdr.nh_group = smp.MGMT_GROUP_ID.SHELL
-
-    with transport:
-        line = b"device list" #input("shell:")
-        #data = cbor.dumps({"d": line })
-        req.set_payload(line)
-        print("TX", vars(req.hdr))
-        print(req.to_bytes())
-        transport.write_msg(req)
-        rsp = transport.read_msg()
-        print("RX", (rsp.hdr))
-
-        print(cbor.loads(rsp.payload))
+def _progress(off, total, rate_kbps):
+    pct = 100.0 * off / total if total else 0.0
+    sys.stderr.write("\rUploading: {:5.1f}% done ({:6.1f}kB/s)".format(pct, rate_kbps))
+    sys.stderr.flush()
 
 
-def _print_smp_mgmt_msg(tag, msg):
-
-        print("----", tag, "----") 
-        print("   header:", vars(msg.hdr))
-        print("   payload:", msg.payload.hex())
-        print("   payload:", cbor.loads(msg.payload))
-
-def _smp_forward(transport, req):
-    req = _smp_fwd_send_wrap(req)
-    with transport:
-        # write request
-        transport.write_msg(req)
-        # write response
-        rsp = transport.read_msg()
-        _print_smp_mgmt_msg("wr_rsp", rsp)
-        """
-        # read request
-        req = _smp_req_fwd_recv()
-        transport.write_msg(req)
-        # read response
-        rsp = transport.read_msg()
-        _print_smp_mgmt_msg("rd_rsp", rsp)
-        """
+# -- commands ----------------------------------------------------------------
 
 
-def _mk_echo_req(msg="hello", fwd=True):
+def do_image_dump(args):
+    """Offline: parse and print an image file. No device involved."""
+    print(image.image_info(args.file).format())
+    return EXIT_SUCCESS
 
-    req = smp.MgmtMsg()
-    req.hdr.nh_group = smp.MGMT_GROUP_ID.OS
-    req.hdr.nh_op = smp.MGMT_OP.WRITE
-    req.hdr.nh_id = smp.Mynewt.OS_MGMT_ID.ECHO
 
-    req.encode_payload({"d": msg })
-    return req
+def do_image_state(args, grp):
+    print(grp.get_state(timeout=args.timeout).format())
+    return EXIT_SUCCESS
 
-SMP_FORWARD_ID_STATE=0
-SMP_FORWARD_ID_SEND=1
-SMP_FORWARD_ID_RECV=2
-MGMT_GROUP_ID_FORWARD=255
-def _mk_image_state_req():
-    req = smp.MgmtMsg()
-    req.hdr.nh_group=0x1
-    req.hdr.nh_op=0x0
-    req.hdr.nh_id=0x0
 
-    req.encode_payload({"m": "m" })
-    return req
+def do_image_upload(args, grp):
+    info = image.image_info(args.file)
+    logger.info("uploading %s v%s (%d bytes)", args.file, info.hdr.ih_ver, info.size)
 
-def _smp_fwd_send_wrap(fwd_req, media='ble', addr=0):
-    req = smp.MgmtMsg()
-    #req.hdr.nh_op = args.mgmt_op
-    #req.hdr.nh_id = args.mgmt_id
-    req.hdr.nh_group = MGMT_GROUP_ID_FORWARD
-    req.hdr.nh_op = smp.MGMT_OP.WRITE
-    req.hdr.nh_id = SMP_FORWARD_ID_SEND
+    cb = None if args.verbose else _progress
+    res = grp.upload(
+        args.file,
+        image_num=args.image_num,
+        progress_callback=cb,
+        timeout=args.timeout,
+        resume=not args.no_resume,
+    )
 
-    org_data = fwd_req.to_bytes()
-    #print(org_data)
-    payload = {
-            "m" : media,
-            "a" : addr,
-            "d": org_data,
-            "r": 500
-    }
-    data = cbor.dumps(payload)
-    req.set_payload(data)
-    return req
+    if cb:
+        sys.stderr.write("\n")
 
-def _smp_req_fwd_recv(media='ble', addr=0):
-    req = smp.MgmtMsg()
-    #req.hdr.nh_op = args.mgmt_op
-    #req.hdr.nh_id = args.mgmt_id
-    req.hdr.nh_group = MGMT_GROUP_ID_FORWARD
-    req.hdr.nh_op = smp.MGMT_OP.READ
-    req.hdr.nh_id = SMP_FORWARD_ID_SEND
+    if res.already_present:
+        print("Image '{}' already running in device".format(args.file))
+        return EXIT_SUCCESS
 
-    payload = {
-            "m" : media,
-            "a" : addr
-    }
-    data = cbor.dumps(payload)
-    req.set_payload(data)
-    return req
+    print(
+        "upload_off={} upload_size={} resumed_off={}".format(
+            res.off, res.size, res.resumed_off
+        )
+    )
+    print("hash: {}".format(info.calc_hash.hex()))
+    return EXIT_SUCCESS
 
-def main():
-    args = parser.parse_args()
+
+def do_image_test(args, grp):
+    print(grp.test(args.hash, timeout=args.timeout).format())
+    return EXIT_SUCCESS
+
+
+def do_image_confirm(args, grp):
+    print(grp.confirm(args.hash, timeout=args.timeout).format())
+    return EXIT_SUCCESS
+
+
+def do_image_erase(args, grp):
+    sys.stderr.write("Erasing... (can take more than 10s)\n")
+    grp.erase(slot=args.slot, timeout=max(args.timeout, 15.0))
+    print("Erased slot {}".format(args.slot))
+    return EXIT_SUCCESS
+
+
+def do_os_echo(args, grp):
+    print(grp.echo(args.text, timeout=args.timeout))
+    return EXIT_SUCCESS
+
+
+def do_os_reset(args, grp):
+    try:
+        grp.reset(timeout=args.timeout)
+    except smp.SMPTransportError:
+        # expected - the device often resets before it can answer
+        logger.info("no response to reset, device probably already rebooting")
+    print("Reset sent")
+    return EXIT_SUCCESS
+
+
+def do_os_taskstat(args, grp):
+    for name, stats in grp.taskstats(timeout=args.timeout).items():
+        print("{}: {}".format(name, stats))
+    return EXIT_SUCCESS
+
+
+# -- argument parsing --------------------------------------------------------
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(
+        prog="mcumgr", description="MCU manager (mcumgr/newtmgr SMP) tool"
+    )
+
+    p.add_argument(
+        "--verbose",
+        "-v",
+        default=0,
+        action="count",
+        help="Verbose output (-vvv for more verbosity)",
+    )
+    p.add_argument("--version", action="store_true", help="Show version and exit")
+    p.add_argument(
+        "--transport",
+        "--conntype",
+        dest="transport",
+        choices=["ble", "serial", "nlip"],
+        default="ble",
+        help="transport method (default: ble)",
+    )
+    p.add_argument("--ble-name", type=str, help="BLE device name")
+    p.add_argument("--ble-addr", type=str, help="BLE device address")
+    p.add_argument(
+        "--port", "--interface", dest="port", type=str, help="serial port device"
+    )
+    p.add_argument("--baud", type=int, default=115200, help="serial port baudrate")
+    p.add_argument(
+        "--timeout", type=float, default=10.0, help="timeout in seconds (default: 10)"
+    )
+
+    sub = p.add_subparsers(dest="group")
+
+    # -- image
+    p_img = sub.add_parser("image", help="firmware image management")
+    img_sub = p_img.add_subparsers(dest="cmd")
+
+    s = img_sub.add_parser("state", help="show image state of each slot")
+    s.set_defaults(_func=do_image_state)
+
+    s = img_sub.add_parser("upload", help="upload a firmware image")
+    s.add_argument("file", help="MCUboot image file")
+    s.add_argument(
+        "--image-num",
+        type=int,
+        default=None,
+        help="image number for multi-image devices",
+    )
+    s.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="do not inspect device state first; always upload from scratch",
+    )
+    s.set_defaults(_func=do_image_upload)
+
+    s = img_sub.add_parser("test", help="mark image pending (boot once)")
+    s.add_argument("hash", nargs="?", default=None, help="image hash (default: slot 1)")
+    s.set_defaults(_func=do_image_test)
+
+    s = img_sub.add_parser("confirm", help="confirm image permanently")
+    s.add_argument("hash", nargs="?", default=None, help="image hash (default: slot 1)")
+    s.set_defaults(_func=do_image_confirm)
+
+    s = img_sub.add_parser("erase", help="erase a slot")
+    s.add_argument("--slot", type=int, default=1, help="slot to erase (default: 1)")
+    s.set_defaults(_func=do_image_erase)
+
+    s = img_sub.add_parser("dump", help="print image file info (offline)")
+    s.add_argument("file", help="MCUboot image file")
+    s.set_defaults(_func=do_image_dump, _offline=True)
+
+    # -- os
+    p_os = sub.add_parser("os", help="OS management")
+    os_sub = p_os.add_subparsers(dest="cmd")
+
+    s = os_sub.add_parser("echo", help="echo a string via the device")
+    s.add_argument("text", nargs="?", default="hello")
+    s.set_defaults(_func=do_os_echo)
+
+    s = os_sub.add_parser("reset", help="reboot the device")
+    s.set_defaults(_func=do_os_reset)
+
+    s = os_sub.add_parser("taskstat", help="show task statistics")
+    s.set_defaults(_func=do_os_taskstat)
+
+    args = p.parse_args(argv)
+    return p, args
+
+
+def main(argv=None):
+    parser, args = parse_args(argv)
+
     _set_verbose(args.verbose)
-    logger.debug("args={}".format(args))
 
     if args.version:
-        print("version:", "<unkwown>") # TODO
-        exit(0)
+        print(__version__)
+        return EXIT_SUCCESS
 
+    func = getattr(args, "_func", None)
+    if func is None:
+        parser.print_help()
+        return EXIT_USER_ERROR
 
-    if args.transport == "ble":
-        transport = SMPTransportBLE(name=args.ble_name, timeout=args.timeout)
-    elif args.transport in ["serial", "nlip"]:
-        transport = SMPTransportSerial(
-                            device=args.interface,
-                            baudrate=args.baud,
-                            timeout=args.timeout)
-    else:
-        raise argparse.ArgumentTypeError("Unknown transport")
+    # `image dump` reads a local file, it needs no device
+    if getattr(args, "_offline", False):
+        try:
+            return func(args)
+        except (image.ImageError, OSError) as e:
+            print("ERR: {}".format(e), file=sys.stderr)
+            return EXIT_USER_ERROR
 
-    #req = _mk_echo_req()
-    req = _mk_image_state_req()
-    _smp_forward(transport, req)
+    from mcumgr.mgmt_image import MgmtGrpImage
+    from mcumgr.mgmt_os import MgmtGrpOs
 
-    #run_interactive_shell(transport)
+    grp_cls = {"image": MgmtGrpImage, "os": MgmtGrpOs}[args.group]
+
+    try:
+        transport = _mk_transport(args)
+    except argparse.ArgumentTypeError as e:
+        print("ERR: {}".format(e), file=sys.stderr)
+        return EXIT_USER_ERROR
+
+    try:
+        with transport:
+            return func(args, grp_cls(transport))
+    except smp.MgmtEndpointError as e:
+        print("\nERR: {}".format(e), file=sys.stderr)
+        return EXIT_RESPONSE_ERROR
+    except smp.SMPTransportError as e:
+        print("\nERR: transport: {}".format(e), file=sys.stderr)
+        return EXIT_TRANSPORT_ERROR
+    except image.ImageError as e:
+        print("\nERR: {}".format(e), file=sys.stderr)
+        return EXIT_USER_ERROR
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return EXIT_USER_ERROR
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

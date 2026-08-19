@@ -1,8 +1,10 @@
 # mcumgr OS management group
 
-from enum import Enum, IntEnum
+from enum import IntEnum
+
 from . import smp
 from .mgmt import MgmtGrpBase, MgmtGrpEndpoint
+
 
 class OS_MGMT_ID(IntEnum):
     # fmt: off
@@ -21,6 +23,7 @@ class OS_MGMT_ID(IntEnum):
         except ValueError:
             return "{}.<unknown {}>".format(OS_MGMT_ID.__name__, val)
 
+
 class MgmtGrpOs(MgmtGrpBase):
     """OS Management Group"""
 
@@ -28,5 +31,34 @@ class MgmtGrpOs(MgmtGrpBase):
 
     def __init__(self, transport):
         super().__init__(transport)
-        self.mh_echo = MgmtGrpEndpoint(transport, self.nh_group, 0)
-        self.mh_taskstats = MgmtGrpEndpoint(transport, self.nh_group, 2)
+        self.mh_echo = MgmtGrpEndpoint(transport, self.nh_group, OS_MGMT_ID.ECHO)
+        self.mh_taskstats = MgmtGrpEndpoint(
+            transport, self.nh_group, OS_MGMT_ID.TASKSTAT
+        )
+        self.mh_reset = MgmtGrpEndpoint(transport, self.nh_group, OS_MGMT_ID.RESET)
+        self.mh_datetime = MgmtGrpEndpoint(
+            transport, self.nh_group, OS_MGMT_ID.DATETIME_STR
+        )
+
+    def echo(self, text, timeout=None):
+        """Round trip a string through the device. Returns the echoed string."""
+        if not isinstance(text, str):
+            raise TypeError("echo text must be str")
+        rsp = self.mh_echo.mh_write({"d": text}, check=True, timeout=timeout)
+        return rsp.get("r", "")
+
+    def reset(self, timeout=None):
+        """Reboot the device.
+
+        The device may reset before answering, so a transport timeout here is
+        not necessarily a failure.
+        """
+        return self.mh_reset.mh_write(timeout=timeout)
+
+    def taskstats(self, timeout=None):
+        rsp = self.mh_taskstats.mh_read(check=True, timeout=timeout)
+        return rsp.get("tasks", {})
+
+    def datetime(self, timeout=None):
+        rsp = self.mh_datetime.mh_read(check=True, timeout=timeout)
+        return rsp.get("datetime")

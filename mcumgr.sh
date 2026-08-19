@@ -4,7 +4,7 @@
 # modifications to pythons `sys.path` in source.  for development and
 # debug/test. (something about virtualenv...)
 #
-# note: could also run as module `python3 -m bblogger.cli` but that only works
+# note: could also run as module `python3 -m mcumgr.cli` but that only works
 # with correct PWD.
 
 

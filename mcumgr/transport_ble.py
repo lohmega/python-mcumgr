@@ -177,11 +177,32 @@ class SMPTransportBLE:
         )
 
         _async_call(self._clnt.connect(), timeout=self._timeout + 10)
-        logger.debug("connected, mtu_size=%s", getattr(self._clnt, "mtu_size", None))
+        self._acquire_mtu()
+        logger.debug("connected, mtu=%d", self.max_mtu)
         _async_call(
             self._clnt.start_notify(UUID_CHARACT, self._response_handler),
             timeout=self._timeout,
         )
+
+    def _acquire_mtu(self):
+        """Ask BlueZ for the negotiated ATT MTU.
+
+        On BlueZ, mtu_size reports the 23 byte default (and warns) until the
+        MTU has been acquired from a characteristic, which would cap upload
+        chunks at 20 bytes. Other backends know it already. This uses private
+        bleak API, so failure is not fatal - we just keep the default.
+        """
+        backend = getattr(self._clnt, "_backend", None)
+        acquire = getattr(backend, "_acquire_mtu", None)
+        if acquire is None:
+            return
+        if getattr(backend, "_mtu_size", None) is not None:
+            return
+
+        try:
+            _async_call(acquire(), timeout=self._timeout)
+        except Exception as e:  # private API, best effort only
+            logger.debug("could not acquire MTU: %s", e)
 
     def disconnect(self):
         if self._clnt is None:
