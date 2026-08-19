@@ -46,10 +46,28 @@ class SmpProxyTransport:
         self.media = media
         self.address = address
         self.timeout = timeout
-        # sequence for communication with the end device (not the proxy itself)
-        self._seq = 0
+        # sequence for the proxy envelope itself. The seq for the wrapped
+        # messages to the end device comes from next_seq() below, so the two
+        # conversations do not share a counter.
+        self._seq = smp.SeqCounter()
+        self._target_seq = smp.SeqCounter()
         assert(media == "ble")
         self.ble = MgmtGrpProxyBle(base_transport)
+
+    def next_seq(self):
+        """Next nh_seq for messages addressed to the end device.
+
+        SmpProxyTransport is itself used as a transport by the management
+        groups, so it must provide this rather than inheriting the proxy
+        device's counter through __getattr__.
+        """
+        return self._target_seq.next()
+
+    @property
+    def max_mtu(self):
+        # the proxy envelope costs roughly 24 bytes of CBOR around the
+        # wrapped message
+        return max(getattr(self.base_transport, "max_mtu", smp.MGMT_MAX_MTU) - 24, 32)
 
     def connect(self):
         if not self.base_transport.is_connected():
@@ -75,8 +93,7 @@ class SmpProxyTransport:
         proxy_msg.hdr.nh_op = smp.MGMT_OP.WRITE
         proxy_msg.hdr.nh_group = MGMT_GROUP_ID_PROXY_FWD_MGMT
         proxy_msg.hdr.nh_id = PROXY_FWD_MGMT_ID_FWD
-        proxy_msg.hdr.nh_seq = self._seq
-        self._seq += 1
+        proxy_msg.hdr.nh_seq = self._seq.next()
 
         # Build CBOR payload with proxy envelope
         proxy_payload = {
