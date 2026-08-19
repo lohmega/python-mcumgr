@@ -1,7 +1,7 @@
 import logging
 import argparse
 import sys
-import cbor
+import cbor2 as cbor
 
 from mcumgr import smp
 from mcumgr import transport_serial, transport_ble

@@ -1,6 +1,6 @@
 # mcumgr SMP Proxy/Forward transport wrapper
 
-import cbor
+import cbor2 as cbor
 import logging
 from . import smp
 from .mgmt_proxy_ble import MgmtGrpProxyBle

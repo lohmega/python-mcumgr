@@ -1,184 +1,121 @@
+"""BLE (GATT) transport for the SMP protocol.
+
+mcumgr/newtmgr over BLE uses a single GATT service with one characteristic that
+takes write-without-response for requests and notifies for responses:
+
+    service  8D53DC1D-1DB7-4CD3-868B-8A527460AA84
+    charact  DA2E7828-FBCE-4E01-AE9E-261174997C48
+
+bleak is async and the rest of this package is synchronous, so a single daemon
+thread runs an event loop for the whole process and every bleak call is
+marshalled onto it.
+"""
+
 import asyncio
 import logging
-import platform
-from queue import Queue
-import signal
+import queue
 from threading import Thread
+
 # third party imports
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
+
 # local imports
 from mcumgr import smp
 
-# mcumgr or newtmgr can be used over BLE with the following GATT service and
-# characteristic UUIDs to connect to a SMP server running on the target device:
-UUID_SERVICE = "8D53DC1D-1DB7-4CD3-868B-8A527460AA84"
-UUID_CHARACT = "DA2E7828-FBCE-4E01-AE9E-261174997C48"
-
-# The "SMP" GATT service consists of one write no-rsp characteristic for SMP
-# requests: a single-byte characteristic that can only accepts
-# write-without-response commands. The contents of each write command contains
-# an SMP request.
+UUID_SERVICE = "8d53dc1d-1db7-4cd3-868b-8a527460aa84"
+UUID_CHARACT = "da2e7828-fbce-4e01-ae9e-261174997c48"
 
 logger = logging.getLogger(__name__)
 
-from subprocess import Popen, run, PIPE
-import time
-
-
 _thread_loop = None
 
-def _async_loop_worker(loop: asyncio.AbstractEventLoop):
+
+def _async_loop_worker(loop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
 
-def _async_exit():
-    # Cancel all task to ensure all connections closed.  Otherwise devices
-    # can be tied to "zombie connections" and not visible on next scan/connect.
-    for task in asyncio.Task.all_tasks():
-        if task is asyncio.tasks.Task.current_task():
-            continue
-        task.cancel()
-
-
-def _signal_handler(signo):
-    _async_exit()
 
 def _get_thread_loop():
+    """The one event loop that all bleak calls in this process run on."""
     global _thread_loop
-    if not _thread_loop is None:
+    if _thread_loop is not None:
         return _thread_loop
 
     _thread_loop = asyncio.new_event_loop()
     t = Thread(target=_async_loop_worker, args=(_thread_loop,), daemon=True)
     t.start()
-
-    if 0:
-        for signo in [signal.SIGINT, signal.SIGTERM]:
-            _thread_loop.add_signal_handler(signo, _async_exit, signo)
     return _thread_loop
 
 
-def _async_call(coro): #func, *args, **kwargs):
-    """ run and "await" asyncio function/couroutine from synchronos code/context. """
-    task = asyncio.run_coroutine_threadsafe(coro, _get_thread_loop())
-    return task.result()
-
-class _Queue:
-    """ Queue shared between asynchronous and synchronous code"""
-    def __init__(self):
-        self._loop = _get_thread_loop()
-        self._queue = asyncio.Queue()
-
-    def put_nowait(self, item):
-        self._loop.call_soon(self._queue.put_nowait, item)
-        # self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
-
-    def put(self, item):
-        asyncio.run_coroutine_threadsafe(self._queue.put(item), self._loop).result()
-
-    def get(self, timeout=None):
-        # TODO timeout
-        return asyncio.run_coroutine_threadsafe(
-            self._queue.get(), self._loop
-        ).result()
-
-    def aput_nowait(self, item):
-        self._queue.put_nowait(item)
-
-    async def aput(self, item):
-        await self._queue.put(item)
-
-    async def aget(self, timeout=None):
-        # TODO timeout
-        return await self._queue.get()
+def _async_call(coro, timeout=None):
+    """Run a coroutine on the background loop and block until it completes."""
+    fut = asyncio.run_coroutine_threadsafe(coro, _get_thread_loop())
+    try:
+        return fut.result(timeout=timeout)
+    except TimeoutError:
+        fut.cancel()
+        raise smp.SMPTransportError("timeout after {}s".format(timeout))
 
 
-if platform.system() == "Linux":
-
-    def bluetoothctl(dev):
-        props = dev.details["props"]
-        if not props:
-            logger.warning("No props")
-            return
-
-        logger.debug(str(props))
-
-        p = Popen("bluetoothctl", stdin=PIPE, stdout=PIPE, stderr=PIPE)
-
-        trusted = props.get("Trusted", False)
-        if not trusted:
-            cmd = "trust {}\n".format(dev.address)
-            p.stdin.write(cmd.encode())
-            time.sleep(1)
-
-        paired = props.get("Paired", False)
-        if not paired:
-            cmd = "pair {}\n".format(dev.address)
-            p.stdin.write(cmd.encode())
-            time.sleep(1)
-
-        if 1:
-            cmd = "quit\n"
-            p.stdin.write(cmd.encode())
-            time.sleep(1)
-
-        p.communicate()
-        logger.debug(
-            "bluethoothctl stdout:'%s', stderr:'%s'", str(p.stdout), str(p.stderr)
-        )
+def _adv_has_smp_service(adv):
+    uuids = [str(u).lower() for u in (adv.service_uuids or [])]
+    return UUID_SERVICE in uuids
 
 
-async def scan(address=None, name=None, timeout=10):
+def scan(timeout=10, smp_only=True):
+    """Scan for devices. Returns a list of (BLEDevice, AdvertisementData).
+
+    Note that a device can host the SMP service without advertising its UUID,
+    so `smp_only` filters on what is advertised, not on what the device has.
+    """
+    found = _async_call(
+        BleakScanner.discover(timeout=timeout, return_adv=True),
+        timeout=timeout + 10,
+    )
+
     devices = []
-    scanner = BleakScanner()
-    candidates = await scanner.discover(timeout=timeout)
-    suuid = UUID_SERVICE
-    for d in candidates:
+    for dev, adv in found.values():
         logger.debug(
-            "address={}. details={}, metadata={}".format(
-                d.address, d.details, d.metadata
-            )
+            "address=%s name=%s rssi=%s uuids=%s",
+            dev.address,
+            adv.local_name,
+            adv.rssi,
+            adv.service_uuids,
         )
-
-        if not "uuids" in d.metadata:
+        if smp_only and not _adv_has_smp_service(adv):
             continue
-
-        if address and address != d.address:
-            continue
-
-        advertised = d.metadata["uuids"]
-        if not suuid.lower() in advertised and not suuid.upper() in advertised:
-            continue
-
-        devices.append(d)
+        devices.append((dev, adv))
 
     return devices
 
 
 def find_device(address=None, name=None, timeout=10):
-    scanner = BleakScanner()
+    """Find a single device by address or advertised name."""
+    if address is None and name is None:
+        raise ValueError("No device identifier. Need address or name")
 
-    logger.debug("connecting...")
-    candidates = _async_call(scanner.discover(timeout=timeout))
-
-    for d in candidates:
-        logger.debug(
-            "address={}. details={}, metadata={}".format(
-                d.address, d.details, d.metadata
-            )
+    if address:
+        # BleakScanner can stop as soon as it sees the address, no need to
+        # burn the full scan window.
+        dev = _async_call(
+            BleakScanner.find_device_by_address(address, timeout=timeout),
+            timeout=timeout + 10,
         )
-        if name and name == d.name:
-            return d
+        return dev
 
-        if address and address == d.address:
-            return d
+    for dev, adv in scan(timeout=timeout, smp_only=False):
+        if name in (adv.local_name, dev.name):
+            return dev
 
     return None
 
 
 class SMPTransportBLE:
     """BLE transport for SMP protocol using GATT characteristics"""
+
+    # Bytes of ATT payload lost to the ATT opcode + handle on a write command.
+    ATT_HEADER_SIZE = 3
 
     def __init__(
         self, address=None, name=None, timeout=10, read_cb=None, *args, **kwargs
@@ -191,15 +128,16 @@ class SMPTransportBLE:
         self._timeout = timeout
         self._read_cb = read_cb
         self._read_buf = bytearray()
-        self._read_msg_q = _Queue()
+        # plain thread queue: notifications are delivered on the event loop
+        # thread and consumed by the caller's thread, and unlike the asyncio
+        # queue this one actually honours a get() timeout.
+        self._read_msg_q = queue.Queue()
         self._clnt = None
+        self._seq = smp.SeqCounter()
 
-    def _set_disconnected_callback(self, cb):
-        try:
-            self._clnt.set_disconnected_callback(cb)
-        # not in all backend (yet). will work without it but might hang forever
-        except NotImplementedError:
-            logger.debug("set_disconnected_callback not supported")
+    def next_seq(self):
+        """Next nh_seq for this connection. One counter per transport."""
+        return self._seq.next()
 
     def __enter__(self):
         self.connect()
@@ -208,72 +146,99 @@ class SMPTransportBLE:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()
 
-    def connect(self):
+    @property
+    def max_mtu(self):
+        """Largest SMP message that fits in one write, in bytes."""
+        if self._clnt is None:
+            return smp.MGMT_MAX_MTU
+        mtu = getattr(self._clnt, "mtu_size", None)
+        if not mtu:
+            return smp.MGMT_MAX_MTU
+        return max(mtu - self.ATT_HEADER_SIZE, 20)
 
+    def connect(self):
         dev = find_device(self._address, self._name, self._timeout)
         if not dev:
-            raise RuntimeError("Device not found")
+            raise smp.SMPTransportError(
+                "Device not found (address={}, name={})".format(
+                    self._address, self._name
+                )
+            )
 
         logger.debug("Device found %s", str(dev))
 
-        self._clnt = BleakClient(dev, timeout=self._timeout)
+        # No explicit pair() call. bleak 0.x needed one and it never worked on
+        # BlueZ anyway (issue #1); BlueZ pairs on demand when a characteristic
+        # requires an encrypted link.
+        self._clnt = BleakClient(
+            dev,
+            timeout=self._timeout,
+            disconnected_callback=self._on_disconnect,
+        )
 
-        try:
-            paired =  _async_call(self._clnt.pair())
-            if not paired:
-                logger.warning("not paired")
-        except NotImplementedError as e:
-            if platform.system() == "Darwin":
-                pass # pairing is automagic in MacOS
-            else:
-                raise e # probably old bleak version
-
-        # self._set_disconnected_callback(self._on_disconnect)
-        _async_call(self._clnt.connect(timeout=self._timeout))
-        _async_call(self._clnt.start_notify(UUID_CHARACT, self._response_handler))
+        _async_call(self._clnt.connect(), timeout=self._timeout + 10)
+        logger.debug("connected, mtu_size=%s", getattr(self._clnt, "mtu_size", None))
+        _async_call(
+            self._clnt.start_notify(UUID_CHARACT, self._response_handler),
+            timeout=self._timeout,
+        )
 
     def disconnect(self):
-        # self._set_disconnected_callback(None)
-        _async_call(self._clnt.disconnect())
+        if self._clnt is None:
+            return
+        try:
+            _async_call(self._clnt.disconnect(), timeout=self._timeout + 10)
+        except (BleakError, smp.SMPTransportError) as e:
+            logger.warning("error during disconnect: %s", e)
+
+    def is_connected(self):
+        # bleak >= 0.10 exposes this as a property, not a coroutine.
+        return self._clnt is not None and self._clnt.is_connected
 
     def _response_handler(self, sender, data):
-        if not isinstance(data, bytearray):
-            data = bytearray(data)  # some BLE backend(s) might require this
-
+        data = bytearray(data)
         logger.debug("RX: %s", data.hex())
-        if self._read_cb:
-            self._read_cb(self, data)
 
         self._read_buf.extend(data)
-        try:
-            msg = smp.MgmtMsg.from_bytes(self._read_buf)
-        except IndexError as e:
-            logger.debug("received %d bytes. %s", len(self._read_buf), str(e))
-            return
 
-        logger.debug("received msg size %d", msg.size)
-        # keep data that is not part of the msg
-        self._read_buf = self._read_buf[msg.size :]
+        # A response can be split over several notifications, and more than one
+        # response can have arrived, so drain everything that is complete.
+        while True:
+            try:
+                msg = smp.MgmtMsg.from_bytes(self._read_buf)
+            except IndexError:
+                logger.debug("buffered %d bytes, need more", len(self._read_buf))
+                return
 
-        if self._read_cb:
-            self._read_cb(self, msg)
-        else:
-            self._read_msg_q.put_nowait(msg)
+            logger.debug("received msg size %d", msg.size)
+            self._read_buf = self._read_buf[msg.size :]
 
-    def _on_disconnect(self, client, _x=None):
-        raise RuntimeError("Disconnected")
+            if self._read_cb:
+                self._read_cb(self, msg)
+            else:
+                self._read_msg_q.put_nowait(msg)
+
+    def _on_disconnect(self, client):
+        logger.debug("disconnected")
+        # Wake up anyone blocked in read_msg() instead of letting them wait out
+        # the full timeout on a link that is already gone.
+        self._read_msg_q.put_nowait(smp.SMPTransportError("Disconnected"))
 
     def write(self, data):
         if hasattr(data, "__bytes__"):
             data = bytes(data)
 
-        if not isinstance(data, bytearray):
-            data = bytearray(data)  # some BLE backend(s) might require this
+        if not isinstance(data, (bytes, bytearray)):
+            data = bytes(data)
 
-        if not _async_call(self._clnt.is_connected()):
-            raise RuntimeError("Not connected")
-        logger.debug("TX: %s", data.hex())
-        _async_call(self._clnt.write_gatt_char(UUID_CHARACT, data, response=False))
+        if not self.is_connected():
+            raise smp.SMPTransportError("Not connected")
+
+        logger.debug("TX: %s", bytearray(data).hex())
+        _async_call(
+            self._clnt.write_gatt_char(UUID_CHARACT, data, response=False),
+            timeout=self._timeout,
+        )
 
     def write_msg(self, msg):
         self.write(msg.to_bytes())
@@ -282,7 +247,20 @@ class SMPTransportBLE:
         if self._read_cb:
             raise RuntimeError("blocking read not allowed when callback set")
 
-        return self._read_msg_q.get(timeout=timeout)
+        if timeout is None:
+            timeout = self._timeout
+
+        try:
+            itm = self._read_msg_q.get(timeout=timeout)
+        except queue.Empty:
+            raise smp.SMPTransportError(
+                "No response within {}s".format(timeout)
+            ) from None
+
+        # raise transport errors in the caller's thread, not the loop thread
+        if isinstance(itm, Exception):
+            raise itm
+        return itm
 
 
 # Backward compatibility alias

@@ -1,4 +1,4 @@
-from queue import Queue
+from queue import Queue, Empty
 from threading import Thread
 from enum import IntEnum
 import logging
@@ -26,7 +26,6 @@ class NLIP_OP(IntEnum):
 
 class NlipPkt:
 
-    # TODO handle crc in unpack
     """ NLIP packet parser .
     comment from:
     https://github.com/apache/mynewt-core/blob/master/sys/shell/src/shell_nlip.c
@@ -35,8 +34,10 @@ class NlipPkt:
      * fewer. This 127-byte maximum applies to the entire frame, including header,
      * CRC, and terminating newline.
      */
-    Note data format is _not_ the same on both sides! 16-bit CRC is first in recived (from Mynewt MCU)
-    but expected to be last in sent (to Mynewt MCU) data.
+    The 16-bit CRC is last in both directions. (An older comment here claimed
+    it came first on RX; libmcumgr's mcumgr_serial_util.c CRCs the whole
+    received packet, expects the result to be 0 and then strips the trailing
+    two bytes, which only works with a trailing CRC.)
 
     Common for both sides (in pseudo C code):
     '''
@@ -92,9 +93,28 @@ class NlipPkt:
         if self._nlip_len > len(self._nlip_data):
             return None
 
-        payload = self._nlip_data
+        payload = self._nlip_data[: self._nlip_len]
         self.reset()
-        return payload
+
+        # The packet length counts the trailing 16-bit CRC. Verify it and strip
+        # it - previously the CRC was neither checked nor removed, it just fell
+        # off because MgmtMsg.from_bytes slices the payload by nh_len, so a
+        # corrupted frame was silently accepted as valid.
+        if len(payload) < 2:
+            logger.warning("nlip packet too short for crc: %d bytes", len(payload))
+            return None
+
+        body, crc_be = payload[:-2], payload[-2:]
+        (want_crc,) = struct.unpack(">H", crc_be)
+        got_crc = self._crc(body)
+        if got_crc != want_crc:
+            raise smp.SMPTransportError(
+                "nlip crc mismatch: got 0x{:04x}, expected 0x{:04x}".format(
+                    got_crc, want_crc
+                )
+            )
+
+        return body
 
     def _parse_b64_pkt(self, b64data):
 
@@ -218,11 +238,21 @@ class SMPTransportSerial:
     MAX_DATA_PER_LINE = 120
 
     def __init__(
-        self, port=None, baudrate=115200, timeout=10, read_cb=None, *args, **kwargs
+        self,
+        port=None,
+        baudrate=115200,
+        timeout=10,
+        read_cb=None,
+        device=None,
+        *args,
+        **kwargs
     ):
-        """ warning: if param read_cb is provided it will be called from reader thread. 
+        """ warning: if param read_cb is provided it will be called from reader thread.
         safer to use blocking read with a timeout to consume incomming messages.
+
+        `device` is accepted as an alias for `port`.
         """
+        port = port if port is not None else device
         if port is None:
             raise ValueError("No serial port device provided")
 
@@ -233,6 +263,16 @@ class SMPTransportSerial:
         self._ser = None
         self._read_msg_q = Queue()
         self._read_thread = None
+        self._seq = smp.SeqCounter()
+
+    def next_seq(self):
+        """Next nh_seq for this connection. One counter per transport."""
+        return self._seq.next()
+
+    @property
+    def max_mtu(self):
+        """Largest SMP message that fits in one packet, in bytes."""
+        return smp.MGMT_MAX_MTU
 
     def __enter__(self):
         self.connect()
@@ -245,7 +285,7 @@ class SMPTransportSerial:
         logger.debug("reader thread started")
 
         if msg_queue and read_cb:
-            logger.warn("cant have both msg_queue and read_cb")
+            logger.warning("cant have both msg_queue and read_cb")
 
         nlip = NlipPkt()
         while ser.is_open:
@@ -261,6 +301,8 @@ class SMPTransportSerial:
                 msg = e
                 break
             except Exception as e:
+                # drop whatever was half-assembled, the stream is out of sync
+                nlip.reset()
                 msg = e
             # should be None or some exception
             logger.debug("read item: %s", str(msg))
@@ -315,7 +357,16 @@ class SMPTransportSerial:
     def read_msg(self, timeout=None):
         if self._read_cb:
             raise RuntimeError("blocking read not allowed when callback set")
-        itm = self._read_msg_q.get(timeout=timeout)
+
+        if timeout is None:
+            timeout = self._timeout
+
+        try:
+            itm = self._read_msg_q.get(timeout=timeout)
+        except Empty:
+            raise smp.SMPTransportError(
+                "No response within {}s".format(timeout)
+            ) from None
         # raise error in main/caller thread instead of reader thread
         if isinstance(itm, Exception):
             raise itm

@@ -5,7 +5,7 @@
 
 from enum import Enum, IntEnum
 import struct
-import cbor
+import cbor2 as cbor
 import logging
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,26 @@ class MgmtEndpointError(SMPError):
             parts.append(f"reason: {self.rsn}")
 
         return " | ".join(parts)
+
+
+class SeqCounter:
+    """Sequence number generator shared by every endpoint on one transport.
+
+    `nh_seq` is a single uint8 field in the SMP header and the device echoes it
+    back verbatim, so it is what lets a caller match a response to its request.
+    Giving each management endpoint its own counter (as an earlier version did)
+    means two endpoints on the same connection both start at 0 and hand out
+    colliding sequence numbers. libmcumgr threads one `uint8_t *seq` through a
+    session for the same reason - keep exactly one of these per transport.
+    """
+
+    def __init__(self, start=0):
+        self._seq = start & 0xFF
+
+    def next(self):
+        seq = self._seq
+        self._seq = (self._seq + 1) & 0xFF
+        return seq
 
 
 class MGMT_OP(IntEnum):

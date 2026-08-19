@@ -1,7 +1,7 @@
 import logging
 import sys
 import os
-import cbor
+import cbor2 as cbor
 
 import utils
 utils.use_repo_sources(True)

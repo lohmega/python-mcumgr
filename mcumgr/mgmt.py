@@ -1,6 +1,6 @@
 # mcumgr management group and endpoint classes
 
-import cbor
+import cbor2 as cbor
 from . import smp
 
 
@@ -11,9 +11,8 @@ class MgmtGrpEndpoint:
         self.transport = transport
         self.nh_group = nh_group
         self.nh_id = nh_id
-        self._seq = 0
 
-    def _communicate(self, op, data=None, check=False):
+    def _communicate(self, op, data=None, check=False, timeout=None):
         """Execute a command with the specified operation and payload
 
         Args:
@@ -31,18 +30,35 @@ class MgmtGrpEndpoint:
         req.hdr.nh_op = op
         req.hdr.nh_group = self.nh_group
         req.hdr.nh_id = self.nh_id
-        req.hdr.nh_seq = self._seq
-        self._seq += 1
+        req.hdr.nh_seq = self.transport.next_seq()
 
         if data:
             cbor_data = cbor.dumps(data)
             req.set_payload(cbor_data)
 
         self.transport.write_msg(req)
-        rsp = self.transport.read_msg()
+        rsp = self.transport.read_msg(timeout=timeout)
 
         if rsp.hdr.nh_seq != req.hdr.nh_seq:
-            raise smp.MgmtEndpointError("Sequence number mismatch")
+            raise smp.MgmtEndpointError(
+                "Sequence number mismatch: sent {}, got {}".format(
+                    req.hdr.nh_seq, rsp.hdr.nh_seq
+                )
+            )
+
+        if rsp.hdr.nh_group != req.hdr.nh_group:
+            raise smp.MgmtEndpointError(
+                "Group mismatch: sent {}, got {}".format(
+                    req.hdr.nh_group, rsp.hdr.nh_group
+                )
+            )
+
+        if rsp.hdr.nh_id != req.hdr.nh_id:
+            raise smp.MgmtEndpointError(
+                "Command id mismatch: sent {}, got {}".format(
+                    req.hdr.nh_id, rsp.hdr.nh_id
+                )
+            )
 
         response = cbor.loads(rsp.payload) if rsp.payload else {}
 
@@ -55,23 +71,23 @@ class MgmtGrpEndpoint:
 
         return response
 
-    def mh_read(self, data=None, check=False):
+    def mh_read(self, data=None, check=False, timeout=None):
         """Perform READ operation
 
         Args:
             data: Optional data to send
             check: If True, raise MgmtEndpointError if response contains non-zero 'rc'
         """
-        return self._communicate(smp.MGMT_OP.READ, data, check=check)
+        return self._communicate(smp.MGMT_OP.READ, data, check=check, timeout=timeout)
 
-    def mh_write(self, data=None, check=False):
+    def mh_write(self, data=None, check=False, timeout=None):
         """Perform WRITE operation
 
         Args:
             data: data to send
             check: If True, raise MgmtEndpointError if response contains non-zero 'rc'
         """
-        return self._communicate(smp.MGMT_OP.WRITE, data, check=check)
+        return self._communicate(smp.MGMT_OP.WRITE, data, check=check, timeout=timeout)
 
 
 class MgmtGrpBase:
