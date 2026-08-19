@@ -145,10 +145,10 @@ The image parser and the upload state machine are covered by tests that need no
 hardware:
 
 ```
-python3 test/test_image.py
-python3 test/test_mgmt_image.py     # needs cbor2
+./test/run.sh                       # needs cbor2
 ```
 
-The image parser is checked against real signed firmware, and the upload state
-machine against a mock SMP device covering the probe, resume, skip, stall,
+The image parser is checked against real signed firmware; the endpoint layer
+and the upload state machine run against mock transports covering sequencing,
+stale replies, the probe, multi-window transfers, reconnect, skip, stall,
 retry and error paths.

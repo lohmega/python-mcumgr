@@ -1,7 +1,13 @@
 # mcumgr management group and endpoint classes
 
+import logging
+import time
+
 import cbor2 as cbor
+
 from . import smp
+
+logger = logging.getLogger(__name__)
 
 
 class MgmtGrpEndpoint:
@@ -37,14 +43,7 @@ class MgmtGrpEndpoint:
             req.set_payload(cbor_data)
 
         self.transport.write_msg(req)
-        rsp = self.transport.read_msg(timeout=timeout)
-
-        if rsp.hdr.nh_seq != req.hdr.nh_seq:
-            raise smp.MgmtEndpointError(
-                "Sequence number mismatch: sent {}, got {}".format(
-                    req.hdr.nh_seq, rsp.hdr.nh_seq
-                )
-            )
+        rsp = self._read_matching(req, timeout)
 
         if rsp.hdr.nh_group != req.hdr.nh_group:
             raise smp.MgmtEndpointError(
@@ -70,6 +69,42 @@ class MgmtGrpEndpoint:
                 raise smp.MgmtEndpointError("SMP command failed", rc=rc, rsn=rsn)
 
         return response
+
+    def _read_matching(self, req, timeout):
+        """Read until the response for `req` arrives.
+
+        A request that timed out and got re-sent leaves its late response in
+        flight. Failing the next command on that stale reply would turn one
+        slow response into a cascade of errors, so responses carrying an
+        older sequence number are discarded and we keep waiting - bounded by
+        the same timeout budget, so a device that only ever answers with the
+        wrong sequence still fails rather than hanging.
+        """
+        deadline = None
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+
+        while True:
+            remaining = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise smp.SMPTransportError(
+                        "No response with seq {} within {}s".format(
+                            req.hdr.nh_seq, timeout
+                        )
+                    )
+
+            rsp = self.transport.read_msg(timeout=remaining)
+
+            if rsp.hdr.nh_seq == req.hdr.nh_seq:
+                return rsp
+
+            logger.debug(
+                "discarding stale response seq=%d (waiting for %d)",
+                rsp.hdr.nh_seq,
+                req.hdr.nh_seq,
+            )
 
     def mh_read(self, data=None, check=False, timeout=None):
         """Perform READ operation

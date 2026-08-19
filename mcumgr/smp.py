@@ -281,8 +281,13 @@ class MgmtMsg:
     """
     MgmtMsg base class that only operates on bytes payload
     """
-    def __init__(self, hdr=MgmtHdr(), payload=bytearray(), **kwargs):
-        self.hdr = hdr
+    def __init__(self, hdr=None, payload=None, **kwargs):
+        # Both defaults must be built per instance. They used to be
+        # `hdr=MgmtHdr(), payload=bytearray()`, which Python evaluates once at
+        # definition time, so every MgmtMsg built without an explicit header
+        # shared ONE MgmtHdr: setting nh_seq on a new message silently
+        # rewrote the header of every other message still being held.
+        self.hdr = hdr if hdr is not None else MgmtHdr()
         self.payload = None
         # note that nh_len excluded here
         for nh in ["nh_op", "nh_flags", "nh_group", "nh_seq", "nh_id"]:

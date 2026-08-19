@@ -124,6 +124,12 @@ class SMPTransportBLE:
     # Bytes of ATT payload lost to the ATT opcode + handle on a write command.
     ATT_HEADER_SIZE = 3
 
+    # Nothing legitimate accumulates beyond one max-size message. If the RX
+    # buffer passes this without yielding a message, the stream is desynced
+    # (garbage on the characteristic, or a lost notification) and holding on
+    # to it would wedge every later read.
+    MAX_RX_BUFFER = smp.MGMT_MAX_MTU * 4
+
     def __init__(
         self, address=None, name=None, timeout=10, read_cb=None, *args, **kwargs
     ):
@@ -279,7 +285,14 @@ class SMPTransportBLE:
             try:
                 msg = smp.MgmtMsg.from_bytes(self._read_buf)
             except IndexError:
-                logger.debug("buffered %d bytes, need more", len(self._read_buf))
+                if len(self._read_buf) > self.MAX_RX_BUFFER:
+                    logger.warning(
+                        "discarding %d unparsable bytes, stream desynced",
+                        len(self._read_buf),
+                    )
+                    self._read_buf = bytearray()
+                else:
+                    logger.debug("buffered %d bytes, need more", len(self._read_buf))
                 return
 
             logger.debug("received msg size %d", msg.size)
