@@ -316,6 +316,38 @@ def test_upload_skips_image_already_running():
     assert not [r for r in dev.requests if r[1] == IMG_MGMT_ID_UPLOAD]
 
 
+def test_upload_skips_image_already_in_slot1():
+    """A matching slot 1 hash means the whole image is already staged."""
+    path, data, digest = _img_file()
+    dev = FakeDevice(slots=[_slot(0, b"\x01" * 32), _slot(1, digest)])
+    grp = MgmtGrpImage(dev)
+
+    res = grp.upload(path)
+    assert res.already_present
+    assert not [r for r in dev.requests if r[1] == IMG_MGMT_ID_UPLOAD]
+
+
+def test_upload_reuploads_when_slot1_pending():
+    """If it is already pending the device restarts, so we upload again."""
+    path, data, digest = _img_file()
+    dev = FakeDevice(slots=[_slot(0, b"\x01" * 32), _slot(1, digest, pending=True)])
+    grp = MgmtGrpImage(dev)
+
+    res = grp.upload(path)
+    assert not res.already_present
+    assert bytes(dev.received) == data
+
+
+def test_upload_no_resume_forces_full_transfer():
+    path, data, digest = _img_file()
+    dev = FakeDevice(slots=[_slot(0, digest)])  # would normally be skipped
+    grp = MgmtGrpImage(dev)
+
+    res = grp.upload(path, resume=False)
+    assert not res.already_present
+    assert bytes(dev.received) == data
+
+
 def test_upload_image_num_key():
     path, _, _ = _img_file()
     dev = FakeDevice(slots=[])

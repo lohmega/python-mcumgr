@@ -115,7 +115,15 @@ def do_image_upload(args, grp):
         sys.stderr.write("\n")
 
     if res.already_present:
-        print("Image '{}' already running in device".format(args.file))
+        if res.already_in_slot == 0:
+            print("Image '{}' already running in device".format(args.file))
+        else:
+            print(
+                "Image '{}' already uploaded to slot {}, nothing to do".format(
+                    args.file, res.already_in_slot
+                )
+            )
+        print("hash: {}".format(info.calc_hash.hex()))
         return EXIT_SUCCESS
 
     print(

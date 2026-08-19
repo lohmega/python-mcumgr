@@ -34,6 +34,15 @@ class SMPTransportError(SMPError):
     pass
 
 
+class SMPDisconnectedError(SMPTransportError):
+    """The link went away.
+
+    Distinct from a plain timeout: a timeout is worth retrying on the same
+    connection, a dead link is not - retrying just burns the retry budget
+    against a transport that cannot recover without reconnecting.
+    """
+
+
 class MgmtEndpointError(SMPError):
     """Management endpoint command errors with rc codes"""
 

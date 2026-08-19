@@ -106,7 +106,10 @@ class ImageState:
         return "\n".join(lines)
 
 
-UploadResult = namedtuple("UploadResult", "off size resumed_off already_present")
+UploadResult = namedtuple(
+    "UploadResult", "off size resumed_off already_present already_in_slot"
+)
+UploadResult.__new__.__defaults__ = (None,)
 
 
 class MgmtGrpImage(MgmtGrpBase):
@@ -244,13 +247,14 @@ class MgmtGrpImage(MgmtGrpBase):
         chunk_size = self._max_chunk
 
         if resume:
-            skip, off = self._plan_upload(info, off, timeout)
+            skip, off, in_slot = self._plan_upload(info, off, timeout)
             if skip:
                 return UploadResult(
                     off=file_size,
                     size=file_size,
                     resumed_off=file_size,
                     already_present=True,
+                    already_in_slot=in_slot,
                 )
 
         num_timeouts = 0
@@ -272,6 +276,16 @@ class MgmtGrpImage(MgmtGrpBase):
 
             try:
                 rsp = self.mh_upload.mh_write(payload, timeout=timeout)
+            except smp.SMPDisconnectedError:
+                # Retrying on a dead link cannot succeed. The device keeps its
+                # upload offset, so reconnecting and calling upload() again
+                # picks up where this left off.
+                logger.info(
+                    "link lost at offset %d/%d; reconnect and upload again to resume",
+                    off,
+                    file_size,
+                )
+                raise
             except smp.SMPTransportError as e:
                 num_timeouts += 1
                 logger.warning("upload timeout %d/%d: %s", num_timeouts, max_timeouts, e)
@@ -337,14 +351,14 @@ class MgmtGrpImage(MgmtGrpBase):
     def _plan_upload(self, info, off, timeout):
         """Check device state before uploading.
 
-        Returns (skip, start_offset).
+        Returns (skip, start_offset, slot_it_is_already_in).
         """
         state = self.get_state(timeout=timeout)
 
         slot0 = state.slot(0)
         if slot0 is not None and slot0.hash == info.calc_hash:
             logger.info("image already running in device")
-            return True, off
+            return True, off, 0
 
         slot1 = state.slot(1)
         if slot1 is not None and slot1.hash == info.calc_hash:
@@ -352,8 +366,13 @@ class MgmtGrpImage(MgmtGrpBase):
                 # Already staged and marked for boot - a fresh upload would
                 # have to start over anyway.
                 logger.info("image already in device, and pending")
-                return False, 0
-            logger.info("partial or unmarked image already in device, resuming")
-            return False, UPLOAD_PROBE_OFFSET
+                return False, 0, None
 
-        return False, off
+            # The slot hash is read from the image trailer, which is the last
+            # thing written, so a matching hash means the whole image is
+            # already there. libmcumgr re-uploads anyway; there is no point,
+            # and over BLE it costs minutes. Mark it test/confirm instead.
+            logger.info("image already uploaded to slot 1, skipping transfer")
+            return True, off, 1
+
+        return False, off, None

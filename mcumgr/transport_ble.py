@@ -267,7 +267,7 @@ class SMPTransportBLE:
         logger.debug("disconnected")
         # Wake up anyone blocked in read_msg() instead of letting them wait out
         # the full timeout on a link that is already gone.
-        self._read_msg_q.put_nowait(smp.SMPTransportError("Disconnected"))
+        self._read_msg_q.put_nowait(smp.SMPDisconnectedError("Disconnected"))
 
     def write(self, data):
         if hasattr(data, "__bytes__"):
@@ -277,7 +277,7 @@ class SMPTransportBLE:
             data = bytes(data)
 
         if not self.is_connected():
-            raise smp.SMPTransportError("Not connected")
+            raise smp.SMPDisconnectedError("Not connected")
 
         logger.debug("TX: %s", bytearray(data).hex())
         _async_call(

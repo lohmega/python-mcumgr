@@ -80,10 +80,15 @@ with SMPTransportBLE(name="sem-bb", timeout=30) as transport:
         img.test()          # or img.confirm()
 ```
 
-Uploads are resumable: the first request probes the device for the offset it
-expects, so an upload interrupted by a dropped connection continues where it
-left off rather than restarting. If the image is already running on the device
-the transfer is skipped entirely (`res.already_present`).
+Uploads ask the device where to start rather than assuming: the first request
+probes for the offset it expects, so a device that kept a partial upload
+continues from there instead of restarting. (Whether it keeps one is up to the
+firmware - some discard the context when the link drops and answer 0.)
+
+The transfer is skipped entirely when the image is already on the device,
+either running in slot 0 or fully staged in slot 1; `res.already_present` is
+then True and `res.already_in_slot` says which. Pass `resume=False` to force a
+full transfer regardless.
 
 Image files can also be inspected without a device:
 
@@ -105,3 +110,7 @@ hardware:
 python3 test/test_image.py
 python3 test/test_mgmt_image.py     # needs cbor2
 ```
+
+The image parser is checked against real signed firmware, and the upload state
+machine against a mock SMP device covering the probe, resume, skip, stall,
+retry and error paths.
