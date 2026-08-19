@@ -11,6 +11,7 @@ import hashlib
 import os
 import struct
 import sys
+import time
 
 sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -346,6 +347,136 @@ def test_upload_no_resume_forces_full_transfer():
     res = grp.upload(path, resume=False)
     assert not res.already_present
     assert bytes(dev.received) == data
+
+
+# -- partial upload / continue ----------------------------------------------
+
+
+def test_partial_upload_then_continue():
+    """max_bytes stops cleanly; a second call finishes from the device offset."""
+    path, data, _ = _img_file(body_len=20000, name="test_img_big.bin")
+    dev = FakeDevice(slots=[])
+    grp = MgmtGrpImage(dev)
+
+    first = grp.upload(path, max_bytes=4000)
+    assert not first.complete, "should report an unfinished transfer"
+    assert 0 < first.off < len(data)
+    assert first.remaining == len(data) - first.off
+    partial = bytes(dev.received)
+    assert partial == data[: first.off]
+
+    second = grp.upload(path)
+    assert second.complete
+    assert second.off == len(data)
+    assert second.resumed_off == first.off, "should pick up where it stopped"
+    assert bytes(dev.received) == data, "reassembled image must match the file"
+
+
+def test_partial_upload_many_windows():
+    """A whole image transferred in small windows still reassembles."""
+    path, data, _ = _img_file(body_len=20000, name="test_img_big.bin")
+    dev = FakeDevice(slots=[])
+    grp = MgmtGrpImage(dev)
+
+    calls = 0
+    res = None
+    while res is None or not res.complete:
+        res = grp.upload(path, max_bytes=3000)
+        calls += 1
+        assert calls < 60, "should converge"
+
+    assert bytes(dev.received) == data
+    assert res.off == len(data)
+    assert calls > 2, "expected several windows"
+
+
+def test_max_duration_stops_early():
+    path, data, _ = _img_file(body_len=20000, name="test_img_big.bin")
+
+    class SlowDevice(FakeDevice):
+        def read_msg(self, timeout=None):
+            time.sleep(0.02)
+            return super().read_msg(timeout)
+
+    dev = SlowDevice(slots=[])
+    grp = MgmtGrpImage(dev)
+
+    res = grp.upload(path, max_duration=0.05)
+    assert not res.complete
+    assert res.off < len(data)
+
+
+def test_reconnect_continues_upload():
+    """A dropped link mid-transfer is rebuilt and the transfer carries on."""
+    path, data, _ = _img_file()
+
+    class FlappyDevice(FakeDevice):
+        drop_at = 3
+        reconnects = 0
+
+        def read_msg(self, timeout=None):
+            if self._last_id == IMG_MGMT_ID_UPLOAD:
+                self.drop_at -= 1
+                if self.drop_at == 0:
+                    self._pending_rsp = None
+                    raise smp.SMPDisconnectedError("Disconnected")
+            return super().read_msg(timeout)
+
+        def reconnect(self):
+            self.reconnects += 1
+
+    dev = FlappyDevice(slots=[])
+    grp = MgmtGrpImage(dev)
+
+    res = grp.upload(path, reconnects=3)
+    assert res.complete
+    assert dev.reconnects == 1, "should have rebuilt the link once"
+    assert bytes(dev.received) == data
+
+
+def test_disconnect_without_reconnect_budget_raises():
+    path, _, _ = _img_file()
+
+    class DroppingDevice(FakeDevice):
+        def read_msg(self, timeout=None):
+            if self._last_id == IMG_MGMT_ID_UPLOAD:
+                self._pending_rsp = None
+                raise smp.SMPDisconnectedError("Disconnected")
+            return super().read_msg(timeout)
+
+    dev = DroppingDevice(slots=[])
+    grp = MgmtGrpImage(dev)
+    try:
+        grp.upload(path, reconnects=0)
+    except smp.SMPDisconnectedError:
+        pass
+    else:
+        raise AssertionError("expected SMPDisconnectedError")
+
+
+def test_reconnect_budget_is_finite():
+    path, _, _ = _img_file()
+
+    class AlwaysDropDevice(FakeDevice):
+        reconnects = 0
+
+        def read_msg(self, timeout=None):
+            if self._last_id == IMG_MGMT_ID_UPLOAD:
+                self._pending_rsp = None
+                raise smp.SMPDisconnectedError("Disconnected")
+            return super().read_msg(timeout)
+
+        def reconnect(self):
+            self.reconnects += 1
+
+    dev = AlwaysDropDevice(slots=[])
+    grp = MgmtGrpImage(dev)
+    try:
+        grp.upload(path, reconnects=2)
+    except smp.SMPDisconnectedError:
+        assert dev.reconnects == 2
+    else:
+        raise AssertionError("expected SMPDisconnectedError after budget")
 
 
 def test_ebusy_is_retried():

@@ -333,7 +333,23 @@ class SMPTransportSerial:
         return 0
 
     def is_connected(self):
-        return self._ser.is_open
+        return self._ser is not None and self._ser.is_open
+
+    def reconnect(self):
+        """Close and reopen the port, discarding any buffered messages."""
+        logger.debug("reconnecting")
+        try:
+            self.disconnect()
+        except Exception as e:
+            logger.debug("ignoring error while closing port: %s", e)
+
+        while True:
+            try:
+                self._read_msg_q.get_nowait()
+            except Empty:
+                break
+
+        self.connect()
 
     def write(self, data):
         """ nlip pack and write """

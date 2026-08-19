@@ -61,7 +61,40 @@ mcumgr --transport serial --port /dev/ttyACM0 image state
 ```
 
 Exit codes: 0 success, 1 usage/image error, 2 transport error, 3 device
-returned a non-zero `rc`.
+returned a non-zero `rc`, 4 upload stopped on a budget and can be continued.
+
+
+Partial uploads over an intermittent link
+=========================================
+
+If the link is only up in short windows, cap each attempt and rerun. The device
+keeps the offset, so the next run continues rather than restarting:
+
+```sh
+# transfer at most 60kB (or 20s) per attempt, loop until done
+until mcumgr --ble-addr F4:65:25:1E:D7:B6 image upload --max-bytes 60000 fw.bin
+do
+    sleep 5     # exit code 4 = more to send
+done
+```
+
+Each run reports `upload_off`, `upload_size`, `resumed_off` and `complete`, so a
+supervising script can track progress across attempts.
+
+To ride out drops within a single run instead, let it rebuild the link itself:
+
+```sh
+mcumgr --ble-addr F4:65:25:1E:D7:B6 image upload --reconnects 5 fw.bin
+```
+
+From the library, `upload()` takes `max_bytes`, `max_duration` and `reconnects`,
+and the result carries `complete`, `remaining` and `percent`:
+
+```python
+res = img.upload("fw.bin", max_bytes=60_000)
+while not res.complete:
+    res = img.upload("fw.bin", max_bytes=60_000)
+```
 
 
 Library
@@ -87,9 +120,8 @@ with SMPTransportBLE(name="sem-bb", timeout=30) as transport:
 ```
 
 Uploads ask the device where to start rather than assuming: the first request
-probes for the offset it expects, so a device that kept a partial upload
-continues from there instead of restarting. (Whether it keeps one is up to the
-firmware - some discard the context when the link drops and answer 0.)
+probes for the offset it expects, so a device holding a partial upload
+continues from there instead of restarting.
 
 The transfer is skipped entirely when the image is already on the device,
 either running in slot 0 or fully staged in slot 1; `res.already_present` is

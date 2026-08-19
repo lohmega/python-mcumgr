@@ -18,6 +18,8 @@ EXIT_SUCCESS = 0
 EXIT_USER_ERROR = 1
 EXIT_TRANSPORT_ERROR = 2
 EXIT_RESPONSE_ERROR = 3
+# upload stopped cleanly on a byte/time budget and can be continued
+EXIT_INCOMPLETE = 4
 
 
 def _set_verbose(verbose_level):
@@ -109,6 +111,9 @@ def do_image_upload(args, grp):
         progress_callback=cb,
         timeout=args.timeout,
         resume=not args.no_resume,
+        max_bytes=args.max_bytes,
+        max_duration=args.max_seconds,
+        reconnects=args.reconnects,
     )
 
     if cb:
@@ -127,11 +132,22 @@ def do_image_upload(args, grp):
         return EXIT_SUCCESS
 
     print(
-        "upload_off={} upload_size={} resumed_off={}".format(
-            res.off, res.size, res.resumed_off
+        "upload_off={} upload_size={} resumed_off={} complete={}".format(
+            res.off, res.size, res.resumed_off, 1 if res.complete else 0
         )
     )
     print("hash: {}".format(info.calc_hash.hex()))
+
+    if not res.complete:
+        print(
+            "incomplete: {} of {} bytes ({:.1f}%), {} remaining - run the same "
+            "command again to continue".format(
+                res.off, res.size, res.percent, res.remaining
+            ),
+            file=sys.stderr,
+        )
+        return EXIT_INCOMPLETE
+
     return EXIT_SUCCESS
 
 
@@ -228,6 +244,25 @@ def parse_args(argv=None):
         "--no-resume",
         action="store_true",
         help="do not inspect device state first; always upload from scratch",
+    )
+    s.add_argument(
+        "--max-bytes",
+        type=int,
+        default=None,
+        help="stop cleanly after about this many bytes; rerun to continue "
+        "(exit code 4 while incomplete)",
+    )
+    s.add_argument(
+        "--max-seconds",
+        type=float,
+        default=None,
+        help="stop cleanly after about this many seconds; rerun to continue",
+    )
+    s.add_argument(
+        "--reconnects",
+        type=int,
+        default=0,
+        help="reconnect and carry on this many times if the link drops",
     )
     s.set_defaults(_func=do_image_upload)
 

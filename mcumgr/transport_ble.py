@@ -14,6 +14,7 @@ marshalled onto it.
 import asyncio
 import logging
 import queue
+import time
 from threading import Thread
 
 # third party imports
@@ -165,6 +166,7 @@ class SMPTransportBLE:
     # BlueZ can drop a device from its cache between discovery and connect, so
     # a first attempt failing with "not found" is common and not terminal.
     CONNECT_ATTEMPTS = 3
+    CONNECT_BACKOFF = 2.0
 
     def connect(self):
         last_err = None
@@ -177,8 +179,33 @@ class SMPTransportBLE:
                 last_err = e
                 logger.debug("connect attempt %d/%d failed: %s",
                              attempt, self.CONNECT_ATTEMPTS, e)
+                if attempt < self.CONNECT_ATTEMPTS:
+                    # Give BlueZ a moment to re-discover rather than hammering
+                    # it with back-to-back scans.
+                    time.sleep(self.CONNECT_BACKOFF)
 
         raise last_err
+
+    def reconnect(self):
+        """Drop the link and establish a fresh one.
+
+        Used to carry an interrupted upload across a dropped connection.
+        """
+        logger.debug("reconnecting")
+        try:
+            self.disconnect()
+        except Exception as e:
+            logger.debug("ignoring error while dropping old link: %s", e)
+
+        # A stale half-message must not be parsed onto the new connection.
+        self._read_buf = bytearray()
+        while True:
+            try:
+                self._read_msg_q.get_nowait()
+            except queue.Empty:
+                break
+
+        self.connect()
 
     def _connect_once(self):
         dev = find_device(self._address, self._name, self._timeout)

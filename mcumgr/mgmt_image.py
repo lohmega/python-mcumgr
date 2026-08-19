@@ -113,10 +113,33 @@ class ImageState:
         return "\n".join(lines)
 
 
-UploadResult = namedtuple(
-    "UploadResult", "off size resumed_off already_present already_in_slot"
-)
-UploadResult.__new__.__defaults__ = (None,)
+class UploadResult(
+    namedtuple(
+        "UploadResult",
+        "off size resumed_off already_present already_in_slot complete",
+    )
+):
+    """Outcome of an upload.
+
+    `off` is the device-reported next offset, i.e. how many bytes it now
+    holds. `complete` is False when the transfer stopped early because a
+    byte/time budget ran out - call upload() again to carry on from there.
+    `resumed_off` is where this call started once the device had its say,
+    which is non-zero when it picked up a partial upload.
+    """
+
+    __slots__ = ()
+
+    @property
+    def remaining(self):
+        return max(self.size - self.off, 0)
+
+    @property
+    def percent(self):
+        return 100.0 * self.off / self.size if self.size else 100.0
+
+
+UploadResult.__new__.__defaults__ = (None, True)
 
 
 class MgmtGrpImage(MgmtGrpBase):
@@ -257,6 +280,9 @@ class MgmtGrpImage(MgmtGrpBase):
         max_timeouts=DEFAULT_MAX_TIMEOUTS,
         verify=True,
         resume=True,
+        max_bytes=None,
+        max_duration=None,
+        reconnects=0,
     ):
         """Upload a firmware image to the device's secondary slot.
 
@@ -274,6 +300,15 @@ class MgmtGrpImage(MgmtGrpBase):
             max_timeouts: consecutive timeouts tolerated before giving up
             verify: parse the image and refuse to upload a corrupt one
             resume: check device state first to skip or resume work
+            max_bytes: stop cleanly after transferring about this many bytes
+            max_duration: stop cleanly after about this many seconds
+            reconnects: how many times to reconnect and carry on if the link
+                        drops mid-transfer (needs transport.reconnect())
+
+        max_bytes/max_duration exist for links that are only up in short
+        windows: stop while the link is still good, then call upload() again
+        later and the device says where to continue from. The result's
+        `complete` field says whether the image is fully transferred.
 
         Returns an UploadResult.
         """
@@ -300,13 +335,27 @@ class MgmtGrpImage(MgmtGrpBase):
                     resumed_off=file_size,
                     already_present=True,
                     already_in_slot=in_slot,
+                    complete=True,
                 )
 
         num_timeouts = 0
         start_t = time.monotonic()
         stalled = 0
+        reconnects_left = reconnects
+        sent = 0
+        stopped_early = False
 
         while off < file_size:
+            if max_bytes is not None and sent >= max_bytes:
+                logger.info("byte budget reached at offset %d/%d", off, file_size)
+                stopped_early = True
+                break
+
+            if max_duration is not None and (time.monotonic() - start_t) >= max_duration:
+                logger.info("time budget reached at offset %d/%d", off, file_size)
+                stopped_early = True
+                break
+
             chunk = data[off : off + chunk_size]
             if not chunk:
                 break
@@ -322,15 +371,29 @@ class MgmtGrpImage(MgmtGrpBase):
             try:
                 rsp = self.mh_upload.mh_write(payload, timeout=timeout)
             except smp.SMPDisconnectedError:
-                # Retrying on a dead link cannot succeed. The device keeps its
-                # upload offset, so reconnecting and calling upload() again
-                # picks up where this left off.
-                logger.info(
-                    "link lost at offset %d/%d; reconnect and upload again to resume",
+                # Retrying a write on a dead link cannot succeed; the link has
+                # to be rebuilt first. Whether the device still has our offset
+                # is up to its firmware - we re-send the same request after
+                # reconnecting and let it correct us.
+                if reconnects_left <= 0:
+                    logger.info(
+                        "link lost at offset %d/%d; reconnect and upload again "
+                        "to continue",
+                        off,
+                        file_size,
+                    )
+                    raise
+
+                reconnects_left -= 1
+                logger.warning(
+                    "link lost at offset %d/%d, reconnecting (%d left)",
                     off,
                     file_size,
+                    reconnects_left,
                 )
-                raise
+                if not self._reconnect_transport():
+                    raise
+                continue
             except smp.SMPTransportError as e:
                 num_timeouts += 1
                 logger.warning("upload timeout %d/%d: %s", num_timeouts, max_timeouts, e)
@@ -379,6 +442,7 @@ class MgmtGrpImage(MgmtGrpBase):
             else:
                 stalled = 0
 
+            sent += len(chunk)
             off = new_off
 
             if progress_callback:
@@ -391,7 +455,23 @@ class MgmtGrpImage(MgmtGrpBase):
             size=file_size,
             resumed_off=resumed_off if resumed_off is not None else 0,
             already_present=False,
+            already_in_slot=None,
+            complete=(off >= file_size) and not stopped_early,
         )
+
+    def _reconnect_transport(self):
+        """Rebuild the link. Returns False if the transport cannot do it."""
+        reconnect = getattr(self.transport, "reconnect", None)
+        if reconnect is None:
+            logger.warning("transport has no reconnect(), cannot continue")
+            return False
+
+        try:
+            reconnect()
+        except Exception as e:
+            logger.warning("reconnect failed: %s", e)
+            return False
+        return True
 
     def _plan_upload(self, info, off, timeout):
         """Check device state before uploading.
