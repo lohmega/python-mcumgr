@@ -49,13 +49,19 @@ def _get_thread_loop():
 
 
 def _async_call(coro, timeout=None):
-    """Run a coroutine on the background loop and block until it completes."""
+    """Run a coroutine on the background loop and block until it completes.
+
+    Backend failures surface as SMPTransportError so that callers only have to
+    know about this package's exceptions, not bleak's.
+    """
     fut = asyncio.run_coroutine_threadsafe(coro, _get_thread_loop())
     try:
         return fut.result(timeout=timeout)
     except TimeoutError:
         fut.cancel()
-        raise smp.SMPTransportError("timeout after {}s".format(timeout))
+        raise smp.SMPTransportError("timeout after {}s".format(timeout)) from None
+    except BleakError as e:
+        raise smp.SMPTransportError(str(e)) from e
 
 
 def _adv_has_smp_service(adv):
@@ -156,7 +162,25 @@ class SMPTransportBLE:
             return smp.MGMT_MAX_MTU
         return max(mtu - self.ATT_HEADER_SIZE, 20)
 
+    # BlueZ can drop a device from its cache between discovery and connect, so
+    # a first attempt failing with "not found" is common and not terminal.
+    CONNECT_ATTEMPTS = 3
+
     def connect(self):
+        last_err = None
+
+        for attempt in range(1, self.CONNECT_ATTEMPTS + 1):
+            try:
+                self._connect_once()
+                return
+            except smp.SMPTransportError as e:
+                last_err = e
+                logger.debug("connect attempt %d/%d failed: %s",
+                             attempt, self.CONNECT_ATTEMPTS, e)
+
+        raise last_err
+
+    def _connect_once(self):
         dev = find_device(self._address, self._name, self._timeout)
         if not dev:
             raise smp.SMPTransportError(
