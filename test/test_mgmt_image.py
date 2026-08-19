@@ -348,6 +348,52 @@ def test_upload_no_resume_forces_full_transfer():
     assert bytes(dev.received) == data
 
 
+def test_ebusy_is_retried():
+    """A transient EBUSY (busy flash rail) should be retried, not fatal."""
+
+    class BusyOnceDevice(FakeDevice):
+        busy = 2
+
+        def _do_state_write(self, req):
+            if self.busy > 0:
+                self.busy -= 1
+                return {"rc": int(smp.MGMT_ERR.EBUSY)}
+            return super()._do_state_write(req)
+
+    h1 = b"\x02" * 32
+    dev = BusyOnceDevice(slots=[_slot(0, b"\x01" * 32), _slot(1, h1)])
+    grp = MgmtGrpImage(dev)
+
+    import mcumgr.mgmt_image as mi
+    old_delay, mi.DEFAULT_EBUSY_DELAY = mi.DEFAULT_EBUSY_DELAY, 0
+    try:
+        state = grp.test(h1)
+    finally:
+        mi.DEFAULT_EBUSY_DELAY = old_delay
+    assert state.slot(1).pending
+
+
+def test_persistent_ebusy_still_raises():
+    class AlwaysBusyDevice(FakeDevice):
+        def _do_state_write(self, req):
+            return {"rc": int(smp.MGMT_ERR.EBUSY)}
+
+    h1 = b"\x02" * 32
+    dev = AlwaysBusyDevice(slots=[_slot(0, b"\x01" * 32), _slot(1, h1)])
+    grp = MgmtGrpImage(dev)
+
+    import mcumgr.mgmt_image as mi
+    old_delay, mi.DEFAULT_EBUSY_DELAY = mi.DEFAULT_EBUSY_DELAY, 0
+    try:
+        grp.test(h1)
+    except smp.MgmtEndpointError as e:
+        assert e.rc == smp.MGMT_ERR.EBUSY
+    else:
+        raise AssertionError("expected MgmtEndpointError for persistent EBUSY")
+    finally:
+        mi.DEFAULT_EBUSY_DELAY = old_delay
+
+
 def test_upload_image_num_key():
     path, _, _ = _img_file()
     dev = FakeDevice(slots=[])

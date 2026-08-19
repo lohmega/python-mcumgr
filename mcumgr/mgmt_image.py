@@ -38,6 +38,13 @@ DEFAULT_TIMEOUT = 5.0
 DEFAULT_ERASE_TIMEOUT = 15.0
 DEFAULT_MAX_TIMEOUTS = 3
 
+# A device can answer EBUSY to a slot-mutating command because the flash it
+# needs is momentarily unavailable - a power-managed external flash rail that
+# has to be woken, or another subsystem holding the slot. Those are meant to be
+# retried; a persistent EBUSY means something really does own the slot.
+DEFAULT_EBUSY_RETRIES = 3
+DEFAULT_EBUSY_DELAY = 2.0
+
 
 class ImageSlot(
     namedtuple(
@@ -137,13 +144,25 @@ class MgmtGrpImage(MgmtGrpBase):
         rsp = self.mh_state.mh_read({"m": "m"}, check=True, timeout=timeout)
         return ImageState(rsp)
 
-    def set_state(self, img_hash=None, confirm=False, timeout=DEFAULT_TIMEOUT):
+    def set_state(
+        self,
+        img_hash=None,
+        confirm=False,
+        timeout=DEFAULT_TIMEOUT,
+        retries=DEFAULT_EBUSY_RETRIES,
+    ):
         """Mark an image pending (test) or confirmed.
 
         Args:
             img_hash: 32 byte image hash. If None, the hash of slot 1 is read
                       from the device and used - i.e. "the image I just
                       uploaded", which is what the mcumgr CLI does.
+
+                      Careful after a test boot: once the device has swapped,
+                      the image under test is the ACTIVE one in slot 0 and
+                      slot 1 holds the image it would revert to. Confirming
+                      without an explicit hash there confirms the old image.
+                      Pass the hash explicitly when confirming a test boot.
             confirm:  False marks the image pending (boots once, reverts
                       unless confirmed). True confirms it permanently.
 
@@ -163,7 +182,10 @@ class MgmtGrpImage(MgmtGrpBase):
         if confirm:
             data["confirm"] = True
 
-        rsp = self.mh_state.mh_write(data, check=True, timeout=timeout)
+        rsp = self._retry_ebusy(
+            lambda: self.mh_state.mh_write(data, check=True, timeout=timeout),
+            retries,
+        )
         return ImageState(rsp)
 
     def test(self, img_hash=None, timeout=DEFAULT_TIMEOUT):
@@ -171,7 +193,11 @@ class MgmtGrpImage(MgmtGrpBase):
         return self.set_state(img_hash, confirm=False, timeout=timeout)
 
     def confirm(self, img_hash=None, timeout=DEFAULT_TIMEOUT):
-        """Confirm an image permanently."""
+        """Confirm an image permanently.
+
+        See set_state() on why you usually want to pass img_hash explicitly
+        when confirming after a test boot.
+        """
         return self.set_state(img_hash, confirm=True, timeout=timeout)
 
     @staticmethod
@@ -190,9 +216,28 @@ class MgmtGrpImage(MgmtGrpBase):
 
     # -- erase ---------------------------------------------------------------
 
-    def erase(self, slot=1, timeout=DEFAULT_ERASE_TIMEOUT):
+    def erase(self, slot=1, timeout=DEFAULT_ERASE_TIMEOUT, retries=DEFAULT_EBUSY_RETRIES):
         """Erase a slot. Can take >10s, hence the longer default timeout."""
-        return self.mh_erase.mh_write({"slot": slot}, check=True, timeout=timeout)
+        return self._retry_ebusy(
+            lambda: self.mh_erase.mh_write({"slot": slot}, check=True, timeout=timeout),
+            retries,
+        )
+
+    @staticmethod
+    def _retry_ebusy(fn, retries):
+        for attempt in range(retries + 1):
+            try:
+                return fn()
+            except MgmtEndpointError as e:
+                if e.rc != smp.MGMT_ERR.EBUSY or attempt == retries:
+                    raise
+                logger.info(
+                    "device busy (attempt %d/%d), retrying in %.0fs",
+                    attempt + 1,
+                    retries,
+                    DEFAULT_EBUSY_DELAY,
+                )
+                time.sleep(DEFAULT_EBUSY_DELAY)
 
     # -- upload --------------------------------------------------------------
 

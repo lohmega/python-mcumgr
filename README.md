@@ -38,7 +38,13 @@ mcumgr image dump fw.bin                       # parse a local image, no device
 ```
 
 `test` and `confirm` default to the hash of slot 1, i.e. the image you just
-uploaded.
+uploaded. After a test boot the device has already swapped: the image under
+test is the *active* one in slot 0 and slot 1 holds what it would revert to, so
+pass the hash explicitly when confirming a test boot.
+
+A full update is `upload` -> `test` -> reset -> `confirm`. Between the reset and
+the `confirm` the device is running the new image unconfirmed; if it never gets
+confirmed the next reset reverts to the previous one.
 
 OS management:
 
