@@ -299,6 +299,10 @@ def main(argv=None):
     except smp.SMPTransportError as e:
         print("\nERR: transport: {}".format(e), file=sys.stderr)
         return EXIT_TRANSPORT_ERROR
+    except OSError as e:
+        # serial.SerialException is an OSError - e.g. port busy or missing
+        print("\nERR: transport: {}".format(e), file=sys.stderr)
+        return EXIT_TRANSPORT_ERROR
     except image.ImageError as e:
         print("\nERR: {}".format(e), file=sys.stderr)
         return EXIT_USER_ERROR
