@@ -103,13 +103,27 @@ def find_device(address=None, name=None, timeout=10):
         raise ValueError("No device identifier. Need address or name")
 
     if address:
-        # BleakScanner can stop as soon as it sees the address, no need to
-        # burn the full scan window.
+        # Fast path: BleakScanner can stop as soon as it sees the address
+        # instead of burning the whole scan window.
         dev = _async_call(
             BleakScanner.find_device_by_address(address, timeout=timeout),
             timeout=timeout + 10,
         )
-        return dev
+        if dev is not None:
+            return dev
+
+        # It returns None for devices a full scan sees perfectly well - seen
+        # repeatedly on BlueZ, including for the strongest device in the room.
+        # A full scan collects every advertisement and then matches, which is
+        # slower but far more reliable, so it is worth the second pass before
+        # reporting the device as missing.
+        logger.debug("address lookup found nothing, falling back to full scan")
+        wanted = address.lower()
+        for dev, _adv in scan(timeout=timeout, smp_only=False):
+            if dev.address.lower() == wanted:
+                return dev
+
+        return None
 
     for dev, adv in scan(timeout=timeout, smp_only=False):
         if name in (adv.local_name, dev.name):

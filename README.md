@@ -63,6 +63,12 @@ mcumgr --transport serial --port /dev/ttyACM0 image state
 Exit codes: 0 success, 1 usage/image error, 2 transport error, 3 device
 returned a non-zero `rc`, 4 upload stopped on a budget and can be continued.
 
+Some devices are only connectable in short windows - a power-managed node may
+advertise steadily but accept a connection only occasionally, and BlueZ reports
+that as `le-connection-abort-by-local` or a disconnect during service
+discovery. The transport already retries connecting a few times; for such
+devices, retry the whole command in a loop rather than raising the timeout.
+
 
 Partial uploads over an intermittent link
 =========================================
