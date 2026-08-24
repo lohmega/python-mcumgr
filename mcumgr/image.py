@@ -188,9 +188,13 @@ class ImageInfo:
         while pos + 4 <= end:
             it_type, _pad, it_len = struct.unpack("<BBH", data[pos : pos + 4])
             pos += 4
-            value = bytes(data[pos : pos + it_len])
-            if len(value) < it_len:
+            if pos + it_len > end:
+                # Bounds-check against the TLV area, not just the file: a
+                # corrupted it_len that still fits in the file would
+                # otherwise silently read a neighboring TLV's bytes (or
+                # beyond) as this one's value.
                 raise ImageError("Truncated TLV type=0x{:02x}".format(it_type))
+            value = bytes(data[pos : pos + it_len])
             self.tlvs.append(ImageTlv(it_type, value, protected))
             pos += it_len
 

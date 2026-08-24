@@ -127,6 +127,39 @@ def test_truncated_tlv_area_rejected():
         raise AssertionError("expected ImageError for truncated TLV area")
 
 
+def test_tlv_len_overrunning_area_rejected():
+    """A TLV whose declared length runs past its own TLV area (but not past
+    the file - there just happen to be more bytes after it, e.g. from a
+    second TLV block) must be rejected rather than silently reading those
+    bytes as the TLV's value."""
+    data, digest = _mk_image()
+
+    # Layout: ... tlv_info(HH: magic, it_tlv_tot) [BBH: type,pad,it_len] value
+    # The single SHA256 TLV's it_len field is 2 bytes, right after the 4
+    # byte tlv_info header and the type+pad bytes of the TLV entry header.
+    tlv_info_off = len(data) - (4 + 4 + len(digest))
+    it_len_off = tlv_info_off + 4 + 2
+
+    assert struct.unpack("<H", data[it_len_off : it_len_off + 2])[0] == len(digest)
+
+    corrupted = bytearray(data)
+    # Claim 16 more bytes than declared without growing it_tlv_tot, and
+    # append 16 harmless bytes so the read would succeed if unbounded -
+    # this exercises the TLV-area bound specifically, not the file-size one
+    # already covered by test_truncated_tlv_area_rejected.
+    struct.pack_into("<H", corrupted, it_len_off, len(digest) + 16)
+    corrupted += b"\x00" * 16
+
+    try:
+        image.ImageInfo(bytes(corrupted))
+    except image.ImageError:
+        pass
+    else:
+        raise AssertionError(
+            "expected ImageError for a TLV len overrunning its TLV area"
+        )
+
+
 def test_format_runs():
     data, _ = _mk_image()
     out = image.ImageInfo(data).format()

@@ -88,7 +88,7 @@ class MgmtGrpProxyBle(MgmtGrpBase):
         """
         return self.mh_scan_filter.mh_write({"index": index}, check=True)
 
-    def _scan_result_poll(self, result_cb=None, timeout=None, poll_interval=0.5):
+    def _scan_result_poll(self, result_cb=None, timeout=5.0, poll_interval=0.5):
         start_time = time.time()
         # Poll for results until timeout or callback requests stop
         ret = []
@@ -116,7 +116,7 @@ class MgmtGrpProxyBle(MgmtGrpBase):
             # Wait before next poll
             time.sleep(poll_interval)
 
-    def scan(self, result_cb=None, timeout=None, poll_interval=0.5):
+    def scan(self, result_cb=None, timeout=5.0, poll_interval=0.5):
         """
         Perform BLE scan with optional filtering.
 
@@ -129,7 +129,8 @@ class MgmtGrpProxyBle(MgmtGrpBase):
                     - "name_icase": Case-insensitive match (optional, bool)
             result_cb: Optional callback function(device) -> bool
                       Called for each discovered device. Return True to stop scanning.
-            timeout: Maximum scan duration in seconds (default: 5.0)
+            timeout: Maximum scan duration in seconds, or None to scan
+                     forever until result_cb finds something (default: 5.0)
             poll_interval: Interval between result polls in seconds (default: 0.5)
 
         Returns:

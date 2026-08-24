@@ -94,10 +94,15 @@ class ImageState:
         ]
         self.split_status = response.get("splitStatus", 0)
 
-    def slot(self, n):
-        """Slot n, or None if the device did not report it."""
+    def slot(self, n, image_num=0):
+        """Slot n of image `image_num`, or None if the device did not report it.
+
+        Multi-image devices report one slot-0/slot-1 pair per image; without
+        filtering by `image` a lookup can silently match a different image's
+        slot that happens to come first in the response.
+        """
         for img in self.images:
-            if img.slot == n:
+            if img.slot == n and img.image == (image_num or 0):
                 return img
         return None
 
@@ -327,7 +332,7 @@ class MgmtGrpImage(MgmtGrpBase):
         chunk_size = self._max_chunk
 
         if resume:
-            skip, off, in_slot = self._plan_upload(info, off, timeout)
+            skip, off, in_slot = self._plan_upload(info, off, timeout, image_num)
             if skip:
                 return UploadResult(
                     off=file_size,
@@ -479,19 +484,19 @@ class MgmtGrpImage(MgmtGrpBase):
             return False
         return True
 
-    def _plan_upload(self, info, off, timeout):
+    def _plan_upload(self, info, off, timeout, image_num=None):
         """Check device state before uploading.
 
         Returns (skip, start_offset, slot_it_is_already_in).
         """
         state = self.get_state(timeout=timeout)
 
-        slot0 = state.slot(0)
+        slot0 = state.slot(0, image_num)
         if slot0 is not None and slot0.hash == info.calc_hash:
             logger.info("image already running in device")
             return True, off, 0
 
-        slot1 = state.slot(1)
+        slot1 = state.slot(1, image_num)
         if slot1 is not None and slot1.hash == info.calc_hash:
             if slot1.pending:
                 # Already staged and marked for boot - a fresh upload would

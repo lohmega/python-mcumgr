@@ -12,6 +12,7 @@ marshalled onto it.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import queue
 import time
@@ -58,7 +59,10 @@ def _async_call(coro, timeout=None):
     fut = asyncio.run_coroutine_threadsafe(coro, _get_thread_loop())
     try:
         return fut.result(timeout=timeout)
-    except TimeoutError:
+    except (TimeoutError, concurrent.futures.TimeoutError):
+        # Python < 3.11: concurrent.futures.TimeoutError is a distinct class
+        # from the builtin TimeoutError, not a subclass of it (unified in
+        # 3.11). fut.result() raises the concurrent.futures one.
         fut.cancel()
         raise smp.SMPTransportError("timeout after {}s".format(timeout)) from None
     except BleakError as e:

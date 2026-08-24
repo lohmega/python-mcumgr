@@ -317,6 +317,30 @@ def test_upload_skips_image_already_running():
     assert not [r for r in dev.requests if r[1] == IMG_MGMT_ID_UPLOAD]
 
 
+def test_upload_does_not_skip_on_a_different_image_num():
+    """A matching hash on a different image must not cause a skip.
+
+    On a multi-image device, image 0 happens to already run the exact bytes
+    we are about to upload for image 1. Without scoping the "already
+    present"/"already staged" check by image number, this looks identical to
+    the image we are targeting actually being there.
+    """
+    path, data, digest = _img_file()
+    dev = FakeDevice(
+        slots=[
+            _slot(0, digest, image=0),
+            _slot(1, b"\x02" * 32, image=0),
+            _slot(0, b"\x03" * 32, image=1),
+            _slot(1, b"\x04" * 32, image=1),
+        ]
+    )
+    grp = MgmtGrpImage(dev)
+
+    res = grp.upload(path, image_num=1)
+    assert not res.already_present, "must not skip based on image 0's matching hash"
+    assert [r for r in dev.requests if r[1] == IMG_MGMT_ID_UPLOAD], "upload should run"
+
+
 def test_upload_skips_image_already_in_slot1():
     """A matching slot 1 hash means the whole image is already staged."""
     path, data, digest = _img_file()
