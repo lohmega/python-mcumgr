@@ -151,16 +151,36 @@ def do_image_upload(args, grp):
     return EXIT_SUCCESS
 
 
-def do_image_test(args, grp):
-    if args.hash is None:
+def _check_hash_arg(hash_arg):
+    """Validate a CLI-supplied image hash before it reaches the device.
+
+    Returns None (unchanged) or raises a ValueError with a message fit to
+    print directly - malformed hex/length is a user error, not a crash.
+    """
+    if hash_arg is None:
         print("Assuming hash of image slot 1", file=sys.stderr)
+        return None
+    try:
+        raw = bytes.fromhex(hash_arg)
+    except ValueError:
+        raise ValueError("hash must be hex, got '{}'".format(hash_arg)) from None
+    if len(raw) != image.IMAGE_HASH_LEN:
+        raise ValueError(
+            "hash must be {} bytes ({} hex chars), got {}".format(
+                image.IMAGE_HASH_LEN, image.IMAGE_HASH_LEN * 2, len(raw)
+            )
+        )
+    return hash_arg
+
+
+def do_image_test(args, grp):
+    args.hash = _check_hash_arg(args.hash)
     print(grp.test(args.hash, timeout=args.timeout).format())
     return EXIT_SUCCESS
 
 
 def do_image_confirm(args, grp):
-    if args.hash is None:
-        print("Assuming hash of image slot 1", file=sys.stderr)
+    args.hash = _check_hash_arg(args.hash)
     print(grp.confirm(args.hash, timeout=args.timeout).format())
     return EXIT_SUCCESS
 
@@ -178,11 +198,7 @@ def do_os_echo(args, grp):
 
 
 def do_os_reset(args, grp):
-    try:
-        grp.reset(timeout=args.timeout)
-    except smp.SMPTransportError:
-        # expected - the device often resets before it can answer
-        logger.info("no response to reset, device probably already rebooting")
+    grp.reset(timeout=args.timeout)
     print("Reset sent")
     return EXIT_SUCCESS
 
@@ -351,6 +367,10 @@ def main(argv=None):
         print("\nERR: transport: {}".format(e), file=sys.stderr)
         return EXIT_TRANSPORT_ERROR
     except image.ImageError as e:
+        print("\nERR: {}".format(e), file=sys.stderr)
+        return EXIT_USER_ERROR
+    except ValueError as e:
+        # malformed CLI-supplied value (e.g. a bad --hash), not a bug
         print("\nERR: {}".format(e), file=sys.stderr)
         return EXIT_USER_ERROR
     except KeyboardInterrupt:

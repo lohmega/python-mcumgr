@@ -18,13 +18,20 @@ class MgmtGrpEndpoint:
         self.nh_group = nh_group
         self.nh_id = nh_id
 
-    def _communicate(self, op, data=None, check=False, timeout=None):
+    def _communicate(
+        self, op, data=None, check=False, timeout=None, tolerate_no_response=False
+    ):
         """Execute a command with the specified operation and payload
 
         Args:
             op: Operation type (READ or WRITE)
             data: Optional data to send in request
             check: If True, raise MgmtEndpointError if response contains non-zero 'rc' field
+            tolerate_no_response: If True, a timeout while waiting for the
+                response (after the request was sent successfully) is not an
+                error - returns {} instead. A failure to send the request at
+                all still raises. For commands like reset, where the device
+                may act before it can answer.
 
         Returns:
             dict: Decoded CBOR response payload
@@ -43,7 +50,15 @@ class MgmtGrpEndpoint:
             req.set_payload(cbor_data)
 
         self.transport.write_msg(req)
-        rsp = self._read_matching(req, timeout)
+
+        if tolerate_no_response:
+            try:
+                rsp = self._read_matching(req, timeout)
+            except smp.SMPTransportError:
+                logger.info("no response after write, treating as success")
+                return {}
+        else:
+            rsp = self._read_matching(req, timeout)
 
         if rsp.hdr.nh_group != req.hdr.nh_group:
             raise smp.MgmtEndpointError(
@@ -115,14 +130,21 @@ class MgmtGrpEndpoint:
         """
         return self._communicate(smp.MGMT_OP.READ, data, check=check, timeout=timeout)
 
-    def mh_write(self, data=None, check=False, timeout=None):
+    def mh_write(self, data=None, check=False, timeout=None, tolerate_no_response=False):
         """Perform WRITE operation
 
         Args:
             data: data to send
             check: If True, raise MgmtEndpointError if response contains non-zero 'rc'
+            tolerate_no_response: see _communicate()
         """
-        return self._communicate(smp.MGMT_OP.WRITE, data, check=check, timeout=timeout)
+        return self._communicate(
+            smp.MGMT_OP.WRITE,
+            data,
+            check=check,
+            timeout=timeout,
+            tolerate_no_response=tolerate_no_response,
+        )
 
 
 class MgmtGrpBase:

@@ -50,10 +50,11 @@ class MgmtGrpOs(MgmtGrpBase):
     def reset(self, timeout=None):
         """Reboot the device.
 
-        The device may reset before answering, so a transport timeout here is
-        not necessarily a failure.
+        The device may reset before answering, so a timeout while waiting for
+        the response is not necessarily a failure - but a failure to send the
+        request at all still is.
         """
-        return self.mh_reset.mh_write(timeout=timeout)
+        return self.mh_reset.mh_write(timeout=timeout, tolerate_no_response=True)
 
     def taskstats(self, timeout=None):
         rsp = self.mh_taskstats.mh_read(check=True, timeout=timeout)
