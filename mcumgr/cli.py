@@ -152,11 +152,15 @@ def do_image_upload(args, grp):
 
 
 def do_image_test(args, grp):
+    if args.hash is None:
+        print("Assuming hash of image slot 1", file=sys.stderr)
     print(grp.test(args.hash, timeout=args.timeout).format())
     return EXIT_SUCCESS
 
 
 def do_image_confirm(args, grp):
+    if args.hash is None:
+        print("Assuming hash of image slot 1", file=sys.stderr)
     print(grp.confirm(args.hash, timeout=args.timeout).format())
     return EXIT_SUCCESS
 
