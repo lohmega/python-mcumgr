@@ -54,6 +54,28 @@ def test_request_is_framed_correctly():
     assert req.hdr.nh_len == len(req.payload)
 
 
+def test_empty_dict_payload_is_still_encoded():
+    """data={} must send an explicit empty CBOR map, not nothing.
+
+    `if data:` treats an empty dict as falsy - indistinguishable from data
+    being omitted entirely - which sends no payload at all instead of the
+    explicit `{}` the caller asked for.
+    """
+    t = QueueTransport([_rsp(0, group=1, cmd_id=2)])
+    ep = MgmtGrpEndpoint(t, 1, 2)
+    ep.mh_write(data={})
+
+    assert t.sent[0].payload == cbor.dumps({})
+
+
+def test_omitted_payload_sends_no_body():
+    t = QueueTransport([_rsp(0, group=1, cmd_id=2)])
+    ep = MgmtGrpEndpoint(t, 1, 2)
+    ep.mh_write()
+
+    assert not t.sent[0].payload
+
+
 def test_stale_response_is_skipped():
     """A late reply to a previous request must not fail the current one."""
     t = QueueTransport(

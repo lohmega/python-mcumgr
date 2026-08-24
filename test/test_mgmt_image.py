@@ -373,6 +373,33 @@ def test_upload_no_resume_forces_full_transfer():
     assert bytes(dev.received) == data
 
 
+def test_upload_no_resume_ignores_a_stale_unrelated_context():
+    """--no-resume must not pick up an unrelated in-progress upload.
+
+    The probe-and-follow-the-device's-offset dance that makes resume work is
+    unconditional in the network sense - it isn't gated by the resume flag.
+    If the device happens to be sitting on a partial upload of some other
+    file when a --no-resume upload starts, following that offset would
+    splice the new file's bytes onto the old file's prefix and report a
+    corrupted hybrid image as a complete, successful transfer.
+    """
+    path, data, digest = _img_file()
+    dev = FakeDevice(slots=[])
+    # Simulate a stale context: some other, larger file, already 5000 bytes in.
+    dev.upload_off = 5000
+    dev.total_len = 99999
+    dev.received = bytearray(b"\xee" * 5000)
+
+    grp = MgmtGrpImage(dev)
+    res = grp.upload(path, resume=False)
+
+    assert res.complete
+    assert bytes(dev.received) == data, "must not splice onto the stale context"
+    uploads = [r for r in dev.requests if r[1] == IMG_MGMT_ID_UPLOAD]
+    assert uploads[0][2]["off"] == 0
+    assert uploads[0][2]["len"] == len(data)
+
+
 # -- partial upload / continue ----------------------------------------------
 
 

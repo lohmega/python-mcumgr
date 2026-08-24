@@ -45,7 +45,10 @@ class MgmtGrpEndpoint:
         req.hdr.nh_id = self.nh_id
         req.hdr.nh_seq = self.transport.next_seq()
 
-        if data:
+        if data is not None:
+            # `data={}` must still encode an explicit empty CBOR map - `if
+            # data:` would treat it the same as omitting the argument and
+            # send no payload at all, a different wire message.
             cbor_data = cbor.dumps(data)
             req.set_payload(cbor_data)
 

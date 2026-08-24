@@ -63,11 +63,20 @@ class SmpProxyTransport:
         """
         return self._target_seq.next()
 
+    # Overhead of wrapping a message in the proxy envelope: the outer SMP
+    # header (8 bytes) plus the CBOR map around it - measured empirically at
+    # ~12 bytes worst case (4 keys, "a" as a full 8-byte-wide uint for a
+    # 48-bit BLE address, "d"'s length prefix at this MTU range never needing
+    # more than 2 bytes since MGMT_MAX_MTU is 1024). The old estimate of 24
+    # only covered part of the CBOR overhead and omitted the outer SMP header
+    # entirely, so a chunk sized off it could exceed the base transport's
+    # real MTU. Comfortable margin included.
+    PROXY_ENVELOPE_OVERHEAD = 40
+
     @property
     def max_mtu(self):
-        # the proxy envelope costs roughly 24 bytes of CBOR around the
-        # wrapped message
-        return max(getattr(self.base_transport, "max_mtu", smp.MGMT_MAX_MTU) - 24, 32)
+        base_mtu = getattr(self.base_transport, "max_mtu", smp.MGMT_MAX_MTU)
+        return max(base_mtu - self.PROXY_ENVELOPE_OVERHEAD, 32)
 
     def connect(self):
         if not self.base_transport.is_connected():

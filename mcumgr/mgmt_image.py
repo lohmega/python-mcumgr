@@ -327,11 +327,11 @@ class MgmtGrpImage(MgmtGrpBase):
             data = f.read()
 
         file_size = len(data)
-        off = UPLOAD_PROBE_OFFSET
         resumed_off = None
         chunk_size = self._max_chunk
 
         if resume:
+            off = UPLOAD_PROBE_OFFSET
             skip, off, in_slot = self._plan_upload(info, off, timeout, image_num)
             if skip:
                 return UploadResult(
@@ -342,6 +342,18 @@ class MgmtGrpImage(MgmtGrpBase):
                     already_in_slot=in_slot,
                     complete=True,
                 )
+        else:
+            # Do not probe the device's offset at all: any context it holds
+            # (its own stale partial upload of a different file, say) is
+            # irrelevant to a caller that explicitly asked to always start
+            # from scratch. off=0 with "len" below forces the device to
+            # discard whatever it had and start a fresh transfer.
+            off = 0
+            # This off=0/"len" request is the very first one sent on this
+            # upload - same situation UPLOAD_FIRST_CHUNK_SIZE exists for on
+            # the probe path: keep it small since the link has not proven it
+            # can carry a full-size write yet.
+            chunk_size = UPLOAD_FIRST_CHUNK_SIZE
 
         num_timeouts = 0
         start_t = time.monotonic()

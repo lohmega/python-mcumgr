@@ -4,4 +4,9 @@ Use `mcumgr.transport_serial` (or `mcumgr.SMPTransportSerial`) instead. This
 module will be removed in a future release.
 """
 
-from mcumgr.transport_serial import SMPClientNlip, SMPTransportSerial  # noqa: F401
+from mcumgr.transport_serial import (  # noqa: F401
+    NLIP_OP,
+    NlipPkt,
+    SMPClientNlip,
+    SMPTransportSerial,
+)
