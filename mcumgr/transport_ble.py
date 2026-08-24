@@ -217,6 +217,8 @@ class SMPTransportBLE:
         except Exception as e:
             logger.debug("ignoring error while dropping old link: %s", e)
 
+        # disconnect() cleared _clnt, so a late disconnect callback from the
+        # old client can no longer reach the queue we are about to drain.
         # A stale half-message must not be parsed onto the new connection.
         self._read_buf = bytearray()
         while True:
@@ -241,19 +243,28 @@ class SMPTransportBLE:
         # No explicit pair() call. bleak 0.x needed one and it never worked on
         # BlueZ anyway (issue #1); BlueZ pairs on demand when a characteristic
         # requires an encrypted link.
-        self._clnt = BleakClient(
+        clnt = BleakClient(
             dev,
             timeout=self._timeout,
             disconnected_callback=self._on_disconnect,
         )
+        self._clnt = clnt
 
-        _async_call(self._clnt.connect(), timeout=self._timeout + 10)
-        self._acquire_mtu()
-        logger.debug("connected, mtu=%d", self.max_mtu)
-        _async_call(
-            self._clnt.start_notify(UUID_CHARACT, self._response_handler),
-            timeout=self._timeout,
-        )
+        try:
+            _async_call(clnt.connect(), timeout=self._timeout + 10)
+            self._acquire_mtu()
+            logger.debug("connected, mtu=%d", self.max_mtu)
+            _async_call(
+                clnt.start_notify(UUID_CHARACT, self._response_handler),
+                timeout=self._timeout,
+            )
+        except BaseException:
+            # Anything failing here (typically start_notify) leaves a live GATT
+            # link behind, and connect() retries with a brand new BleakClient.
+            # Without this the old connection is leaked to the device for every
+            # retry.
+            self._teardown(clnt)
+            raise
 
     def _acquire_mtu(self):
         """Ask BlueZ for the negotiated ATT MTU.
@@ -275,13 +286,26 @@ class SMPTransportBLE:
         except Exception as e:  # private API, best effort only
             logger.debug("could not acquire MTU: %s", e)
 
-    def disconnect(self):
-        if self._clnt is None:
-            return
+    def _teardown(self, clnt):
+        """Drop `clnt`, first making it non-current.
+
+        Clearing _clnt before disconnecting matters: the disconnect callback
+        for this client can be delivered at any time from here on, and
+        _on_disconnect() only enqueues an error for the client that is
+        currently in use.
+        """
+        if self._clnt is clnt:
+            self._clnt = None
         try:
-            _async_call(self._clnt.disconnect(), timeout=self._timeout + 10)
-        except (BleakError, smp.SMPTransportError) as e:
+            _async_call(clnt.disconnect(), timeout=self._timeout + 10)
+        except Exception as e:
             logger.warning("error during disconnect: %s", e)
+
+    def disconnect(self):
+        clnt = self._clnt
+        if clnt is None:
+            return
+        self._teardown(clnt)
 
     def is_connected(self):
         # bleak >= 0.10 exposes this as a property, not a coroutine.
@@ -318,6 +342,14 @@ class SMPTransportBLE:
                 self._read_msg_q.put_nowait(msg)
 
     def _on_disconnect(self, client):
+        # BlueZ can deliver the disconnect signal for an old client long after
+        # reconnect() has drained the queue and brought up a new one. Acting on
+        # it then would inject a bogus SMPDisconnectedError into the queue of a
+        # perfectly healthy connection, so only the current client counts.
+        if client is not self._clnt:
+            logger.debug("ignoring disconnect from stale client")
+            return
+
         logger.debug("disconnected")
         # Wake up anyone blocked in read_msg() instead of letting them wait out
         # the full timeout on a link that is already gone.

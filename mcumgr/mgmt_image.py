@@ -393,6 +393,12 @@ class MgmtGrpImage(MgmtGrpBase):
                 )
                 if not self._reconnect_transport():
                     raise
+                # The new link may have negotiated a smaller MTU than the one
+                # chunk_size was computed for, and the chunk about to be
+                # re-sent is built before any response refreshes it. Clamp it
+                # now; growing again is left to the next response so that a
+                # deliberately small first chunk stays small.
+                chunk_size = min(chunk_size, self._max_chunk)
                 continue
             except smp.SMPTransportError as e:
                 num_timeouts += 1

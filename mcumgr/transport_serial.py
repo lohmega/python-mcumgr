@@ -1,5 +1,6 @@
 from queue import Queue, Empty
-from threading import Thread
+import threading
+from threading import Thread, Event
 from enum import IntEnum
 import logging
 import struct
@@ -263,6 +264,7 @@ class SMPTransportSerial:
         self._ser = None
         self._read_msg_q = Queue()
         self._read_thread = None
+        self._read_stop = None
         self._seq = smp.SeqCounter()
 
     def next_seq(self):
@@ -281,15 +283,32 @@ class SMPTransportSerial:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()
 
-    def _read_thread_worker(self, ser, msg_queue, read_cb):
+    def _read_thread_worker(self, ser, msg_queue, read_cb, stop_evt):
         logger.debug("reader thread started")
 
         if msg_queue and read_cb:
             logger.warning("cant have both msg_queue and read_cb")
 
         nlip = NlipPkt()
-        while ser.is_open:
-            line = ser.readline()
+        while not stop_evt.is_set() and ser.is_open:
+            try:
+                line = ser.readline()
+            except Exception as e:
+                if stop_evt.is_set() or not ser.is_open:
+                    # Expected: the port was closed under us on purpose.
+                    break
+                if read_cb:
+                    read_cb(e)
+                else:
+                    msg_queue.put_nowait(e)
+                break
+
+            if stop_evt.is_set():
+                # Whatever is in `line` belongs to the connection that is
+                # being torn down. Never hand it to the (shared) queue, the
+                # next connection would read it as its own response.
+                break
+
             rxline = bytearray(line)
             logger.debug("RX: %s", rxline.hex())
             msg = None
@@ -319,17 +338,48 @@ class SMPTransportSerial:
         self._ser = serial.Serial(
             self._port, baudrate=self._baudrate, timeout=self._timeout
         )
+        self._read_stop = Event()
         self._read_thread = Thread(
             target=self._read_thread_worker,
-            args=(self._ser, self._read_msg_q, self._read_cb),
+            args=(self._ser, self._read_msg_q, self._read_cb, self._read_stop),
             daemon=True,
         )
         self._read_thread.start()
         return 0
 
+    def _stop_reader(self):
+        """Signal the reader thread and wait for it to actually be gone.
+
+        Without the join, the old thread can still be inside readline() when
+        the port is closed and push a leftover line (or the resulting
+        exception) onto the shared queue afterwards - possibly after
+        reconnect() has drained the queue and started a new connection, which
+        makes the next read_msg() on the healthy new link fail.
+        """
+        if self._read_stop is not None:
+            self._read_stop.set()
+
+        thread = self._read_thread
+        self._read_thread = None
+        if thread is None or thread is threading.current_thread():
+            return
+
+        # Closing the port aborts a blocked read on posix (pyserial writes to
+        # its abort pipe), so this normally returns immediately. The timeout is
+        # only a backstop for backends without that.
+        thread.join(timeout=(self._timeout or 10) + 1)
+        if thread.is_alive():
+            logger.warning("reader thread did not stop within timeout")
+
     def disconnect(self):
         logger.debug("closing serial port")
-        self._ser.close()
+        if self._read_stop is not None:
+            self._read_stop.set()
+        try:
+            if self._ser is not None:
+                self._ser.close()
+        finally:
+            self._stop_reader()
         return 0
 
     def is_connected(self):
@@ -343,6 +393,8 @@ class SMPTransportSerial:
         except Exception as e:
             logger.debug("ignoring error while closing port: %s", e)
 
+        # Safe to drain now: disconnect() joined the reader thread, so nothing
+        # can push onto the queue between here and the new connection.
         while True:
             try:
                 self._read_msg_q.get_nowait()
