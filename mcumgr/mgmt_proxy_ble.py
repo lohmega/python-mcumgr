@@ -56,8 +56,8 @@ class MgmtGrpProxyBle(MgmtGrpBase):
             "enable": False
         })
 
-    def scan_result(self):
-        rsp = self.mh_scan_result.mh_read()
+    def scan_result(self, timeout=None):
+        rsp = self.mh_scan_result.mh_read(timeout=timeout)
         return rsp.get("results", [])
 
     def scan_filter_set(self, filters):
@@ -103,14 +103,22 @@ class MgmtGrpProxyBle(MgmtGrpBase):
         ret = []
         seen_addrs = set()
         while True:
+            remaining = None
             if timeout:
                 elapsed = time.time() - start_time
-                if elapsed >= timeout:
+                remaining = timeout - elapsed
+                if remaining <= 0:
                     logger.debug("scan poll timeout")
                     return ret
 
-            # Get current scan results
-            candidates = self.scan_result()
+            # Get current scan results. Bounded by whatever is left of the
+            # overall scan timeout - mh_read()'s own default otherwise falls
+            # back to the transport's unrelated default timeout, which could
+            # make one poll block far longer than the scan timeout the
+            # caller actually asked for (e.g. a 0.2s scan blocking for a
+            # 10s transport default while the deadline check above only
+            # runs between polls, not during one).
+            candidates = self.scan_result(timeout=remaining)
             candidates = _rename_keys(candidates, 'a', 'address')
 
             for candidate in candidates:
@@ -204,11 +212,19 @@ class MgmtGrpProxyBle(MgmtGrpBase):
             "a": address,
         }
 
+        # req["w"] tells the proxy device itself how long (ms) to keep
+        # trying the connection - the local read must be willing to wait at
+        # least that long too, or we give up and raise a local timeout
+        # while the proxy is still legitimately attempting a connection
+        # that (from its perspective) hasn't failed yet. A few seconds of
+        # margin on top for the proxy's own round-trip/processing overhead.
+        local_timeout = None
         if wait:
             req["w"] = wait
+            local_timeout = wait / 1000.0 + 2.0
 
         logger.info(f"Connecting to at 0x{address:x}...")
-        rsp = self.mh_conn_ctl.mh_write(req, check=True)
+        rsp = self.mh_conn_ctl.mh_write(req, check=True, timeout=local_timeout)
         if not rsp.get("connected", None):
             raise smp.SMPTransportError("Failed to connect {}".format(rsp))
         return rsp

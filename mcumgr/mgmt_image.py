@@ -385,15 +385,24 @@ class MgmtGrpImage(MgmtGrpBase):
         stopped_early = False
 
         while off < file_size:
-            if max_bytes is not None and sent >= max_bytes:
-                logger.info("byte budget reached at offset %d/%d", off, file_size)
-                stopped_early = True
-                break
+            # A budget of 0 (or already-elapsed max_duration) must not stop
+            # the call before the very first round trip - off is still the
+            # synthetic UPLOAD_PROBE_OFFSET at that point, not a real device
+            # offset, and reporting it as the result's `off` would be a
+            # meaningless placeholder rather than reality (the device's real
+            # offset could be 0, or far larger from earlier sessions).
+            # resumed_off is only set once a genuine response has updated
+            # off, so gate the budget checks on that.
+            if resumed_off is not None:
+                if max_bytes is not None and sent >= max_bytes:
+                    logger.info("byte budget reached at offset %d/%d", off, file_size)
+                    stopped_early = True
+                    break
 
-            if max_duration is not None and (time.monotonic() - start_t) >= max_duration:
-                logger.info("time budget reached at offset %d/%d", off, file_size)
-                stopped_early = True
-                break
+                if max_duration is not None and (time.monotonic() - start_t) >= max_duration:
+                    logger.info("time budget reached at offset %d/%d", off, file_size)
+                    stopped_early = True
+                    break
 
             chunk = data[off : off + chunk_size]
             if not chunk:

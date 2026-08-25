@@ -467,6 +467,23 @@ def test_upload_no_resume_ignores_a_stale_unrelated_context():
 # -- partial upload / continue ----------------------------------------------
 
 
+def test_upload_zero_byte_budget_reports_a_real_offset():
+    """max_bytes=0 must not stop before the very first round trip - off
+    would otherwise still be the synthetic UPLOAD_PROBE_OFFSET (32), not
+    a real device offset (which could be 0 or far larger), making the
+    returned UploadResult.off a meaningless placeholder."""
+    path, data, _ = _img_file()
+    dev = FakeDevice(slots=[])  # fresh device, real offset is 0
+    grp = MgmtGrpImage(dev)
+
+    res = grp.upload(path, max_bytes=0)
+
+    assert not res.complete
+    assert res.off == 0, "must report the device's real (probed) offset, not 32"
+    uploads = [r for r in dev.requests if r[1] == IMG_MGMT_ID_UPLOAD]
+    assert len(uploads) == 1, "exactly one round trip (the probe), then stop"
+
+
 def test_partial_upload_then_continue():
     """max_bytes stops cleanly; a second call finishes from the device offset."""
     path, data, _ = _img_file(body_len=20000, name="test_img_big.bin")

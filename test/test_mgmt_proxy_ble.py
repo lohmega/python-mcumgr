@@ -28,6 +28,8 @@ class QueueTransport:
         self.sent.append(msg)
 
     def read_msg(self, timeout=None):
+        self.read_timeouts = getattr(self, "read_timeouts", [])
+        self.read_timeouts.append(timeout)
         if not self._responses:
             raise smp.SMPTransportError("no more responses")
         return self._responses.pop(0)
@@ -50,7 +52,7 @@ class ScriptedProxy(MgmtGrpProxyBle):
     def scan_stop(self):
         self.stopped += 1
 
-    def scan_result(self):
+    def scan_result(self, timeout=None):
         return self._batches.pop(0) if self._batches else []
 
 
@@ -140,6 +142,55 @@ def test_scan_start_propagates_a_device_error():
         assert e.rc == int(smp.MGMT_ERR.EBUSY)
     else:
         raise AssertionError("expected MgmtEndpointError for EBUSY")
+
+
+def test_scan_result_passes_the_remaining_timeout_through():
+    """scan_result()'s read must be bounded by whatever is left of the
+    overall scan timeout - not mh_read()'s default, which falls back to
+    the transport's own unrelated default and could make one poll block
+    far longer than the scan timeout the caller actually asked for."""
+    from mcumgr.mgmt_proxy_ble import MGMT_GROUP_ID_SMP_PROXY_BLE, SMP_PROXY_ID_BLE_SCAN_RESULT
+
+    rsp = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.READ_RSP,
+        nh_group=MGMT_GROUP_ID_SMP_PROXY_BLE,
+        nh_id=SMP_PROXY_ID_BLE_SCAN_RESULT,
+        nh_seq=0,
+    )
+    rsp.encode_payload({"results": []})
+
+    t = QueueTransport([rsp])
+    proxy = MgmtGrpProxyBle(t)
+    proxy.scan_result(timeout=1.5)
+
+    assert len(t.read_timeouts) == 1
+    # _read_matching() recomputes remaining-time-until-deadline right
+    # before the read, so it is very slightly under 1.5, not exactly it.
+    assert 1.4 < t.read_timeouts[0] <= 1.5
+
+
+def test_connect_derives_its_local_timeout_from_wait():
+    """connect(wait=...) tells the proxy device itself how long (ms) to
+    keep trying - the local read must be willing to wait at least that
+    long too, or a large wait fails locally with a timeout while the
+    proxy is still legitimately attempting a connection that has not
+    actually failed yet."""
+    from mcumgr.mgmt_proxy_ble import MGMT_GROUP_ID_SMP_PROXY_BLE, SMP_PROXY_ID_BLE_CONN_CTL
+
+    rsp = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP,
+        nh_group=MGMT_GROUP_ID_SMP_PROXY_BLE,
+        nh_id=SMP_PROXY_ID_BLE_CONN_CTL,
+        nh_seq=0,
+    )
+    rsp.encode_payload({"connected": True})
+
+    t = QueueTransport([rsp])
+    proxy = MgmtGrpProxyBle(t)
+    proxy.connect(address=1, wait=30000)  # 30s, well past any short default
+
+    assert len(t.read_timeouts) == 1
+    assert t.read_timeouts[0] > 30.0, "local read must wait at least as long as wait/1000"
 
 
 def main():
