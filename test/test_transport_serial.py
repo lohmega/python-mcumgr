@@ -303,6 +303,33 @@ def test_reader_survives_a_corrupt_frame():
             t.disconnect()
 
 
+def test_parser_errors_are_wrapped_as_response_error():
+    """Any frame-parsing failure (bad base64, an out-of-place continuation
+    frame, a truncated header, ...) means a frame WAS received - not "no
+    response" - and must surface as SMPResponseError specifically, so a
+    caller can tell it apart from a genuine timeout (see mgmt.py's
+    tolerate_no_response). A raw binascii.Error/AssertionError/struct.error
+    reaching read_msg() would also escape main()'s exception chain as an
+    uncaught traceback instead of the documented transport-error exit."""
+    factory = FakeSerialFactory()
+    with patch.object(transport_serial.serial, "Serial", factory):
+        t = _mk_transport(factory)
+        t.connect()
+        try:
+            # A DATA_START continuation frame with no preceding PKT_START -
+            # desyncs the parser (previously a bare AssertionError).
+            factory.last.feed(DATA_START + base64.b64encode(b"\x01\x02") + b"\n")
+
+            try:
+                t.read_msg(timeout=5)
+            except smp.SMPResponseError:
+                pass
+            else:
+                raise AssertionError("expected SMPResponseError")
+        finally:
+            t.disconnect()
+
+
 def test_disconnect_stops_the_reader_thread():
     """Regression (reconnect race): disconnect() must not return while the old
     reader thread can still push onto the shared queue."""

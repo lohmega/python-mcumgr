@@ -322,9 +322,18 @@ class SMPTransportSerial:
                 msg = e
                 break
             except Exception as e:
-                # drop whatever was half-assembled, the stream is out of sync
-                nlip.reset()
-                msg = e
+                # A frame WAS received, parsing it is just what failed (bad
+                # base64, a corrupt/out-of-place NLIP frame, a truncated SMP
+                # header, ...) - not "no response". Wrapped as
+                # SMPResponseError (see smp.py) so it lands in main()'s
+                # exception chain as a clean transport-error exit instead of
+                # an uncaught binascii.Error/AssertionError/struct.error
+                # traceback; built here, in the reader thread, so the
+                # original exception and its message survive across the
+                # queue to whichever thread calls read_msg().
+                logger.debug("frame parse error: %s", e)
+                nlip.reset()  # drop whatever was half-assembled, stream is out of sync
+                msg = smp.SMPResponseError("nlip frame error: {}".format(e))
             # should be None or some exception
             logger.debug("read item: %s", str(msg))
             if msg:

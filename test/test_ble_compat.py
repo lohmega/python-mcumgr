@@ -86,6 +86,27 @@ def test_find_device_is_the_same_function():
     assert ble.find_device is new_find_device
 
 
+def test_smp_client_ble_invokes_read_cb_for_raw_bytes_and_parsed_message():
+    """Regression: SMPClientBLE used to call read_cb twice per completed
+    message (raw notification bytes, then the parsed MgmtMsg) - a plain
+    alias of the renamed SMPTransportBLE only does the latter."""
+    from mcumgr import smp
+
+    calls = []
+    client = ble.SMPClientBLE(address="AA:BB:CC:DD:EE:FF", read_cb=lambda c, x: calls.append(x))
+
+    m = smp.MgmtMsg(nh_op=smp.MGMT_OP.READ_RSP, nh_group=1, nh_id=2, nh_seq=0)
+    m.encode_payload({"rc": 0})
+    wire_bytes = m.to_bytes()
+
+    client._response_handler(sender=None, data=wire_bytes)
+
+    assert len(calls) == 2, "expected raw-bytes call + parsed-message call"
+    assert bytes(calls[0]) == wire_bytes, "first call must carry the raw notification bytes"
+    assert isinstance(calls[1], smp.MgmtMsg), "second call must carry the parsed message"
+    assert calls[1].decode_payload() == {"rc": 0}
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

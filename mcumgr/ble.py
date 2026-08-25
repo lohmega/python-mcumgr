@@ -9,11 +9,28 @@ import asyncio
 from mcumgr.transport_ble import (  # noqa: F401
     UUID_CHARACT,
     UUID_SERVICE,
-    SMPClientBLE,
     SMPTransportBLE,
     find_device,
 )
 from mcumgr import transport_ble as _transport_ble
+
+
+class SMPClientBLE(SMPTransportBLE):
+    """Deprecated. transport_ble.SMPClientBLE (a plain alias of
+    SMPTransportBLE) only invokes read_cb for a fully parsed MgmtMsg. The
+    pre-rename SMPClientBLE invoked it twice per notification: once with
+    the raw bytes, once more with the parsed message once one completed -
+    a caller sniffing/streaming raw notification bytes via read_cb would
+    silently stop receiving them through the plain alias. Restores that by
+    calling read_cb with the raw bytes before letting the normal handler
+    do its parsing (which still calls read_cb again, with the parsed
+    message, exactly as it already does).
+    """
+
+    def _response_handler(self, sender, data):
+        if self._read_cb:
+            self._read_cb(self, bytearray(data))
+        super()._response_handler(sender, data)
 
 
 async def scan(address=None, name=None, timeout=10):
