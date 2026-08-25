@@ -151,14 +151,14 @@ def do_image_upload(args, grp):
     return EXIT_SUCCESS
 
 
-def _check_hash_arg(hash_arg):
+def _check_hash_arg(hash_arg, default_desc):
     """Validate a CLI-supplied image hash before it reaches the device.
 
     Returns None (unchanged) or raises a ValueError with a message fit to
     print directly - malformed hex/length is a user error, not a crash.
     """
     if hash_arg is None:
-        print("Assuming hash of image slot 1", file=sys.stderr)
+        print("Assuming {}".format(default_desc), file=sys.stderr)
         return None
     try:
         raw = bytes.fromhex(hash_arg)
@@ -174,7 +174,7 @@ def _check_hash_arg(hash_arg):
 
 
 def do_image_test(args, grp):
-    args.hash = _check_hash_arg(args.hash)
+    args.hash = _check_hash_arg(args.hash, "hash of image slot 1")
     print(
         grp.test(args.hash, timeout=args.timeout, image_num=args.image_num).format()
     )
@@ -182,7 +182,10 @@ def do_image_test(args, grp):
 
 
 def do_image_confirm(args, grp):
-    args.hash = _check_hash_arg(args.hash)
+    # Unlike test(), an omitted hash here is not a client-side guess - the
+    # device natively resolves it to "confirm whatever is currently active",
+    # which is correct both before and after a test boot's swap.
+    args.hash = _check_hash_arg(args.hash, "the currently active image")
     print(
         grp.confirm(
             args.hash, timeout=args.timeout, image_num=args.image_num
@@ -304,13 +307,18 @@ def parse_args(argv=None):
     s.set_defaults(_func=do_image_test)
 
     s = img_sub.add_parser("confirm", help="confirm image permanently")
-    s.add_argument("hash", nargs="?", default=None, help="image hash (default: slot 1)")
+    s.add_argument(
+        "hash",
+        nargs="?",
+        default=None,
+        help="image hash (default: whatever is currently active)",
+    )
     s.add_argument(
         "--image-num",
         type=int,
         default=None,
-        help="image number for multi-image devices, used only to pick the "
-        "default slot-1 hash when no hash is given",
+        help="unused when no hash is given - the device resolves that case "
+        "to its own active image, not a client-picked one",
     )
     s.set_defaults(_func=do_image_confirm)
 

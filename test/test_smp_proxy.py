@@ -131,6 +131,34 @@ def test_read_msg_discards_a_stale_outer_envelope():
     assert rsp.decode_payload() == {"real": True}
 
 
+def test_read_msg_discards_a_stale_response_from_a_different_group():
+    """A late response to some other conversation entirely (e.g. a timed-out
+    scan/connect control request, group != FWD) sharing the same
+    base_transport must also be discarded by seq, not just same-group/id
+    stale FWD envelopes - the shared counter makes any seq mismatch
+    conclusive regardless of group/id."""
+    real_inner = smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=9)
+    real_inner.encode_payload({"real": True})
+
+    stale_control_rsp = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP, nh_group=254, nh_id=3, nh_seq=99
+    )
+    stale_control_rsp.encode_payload({"rc": 0})
+
+    base = ScriptedBaseTransport(
+        [
+            stale_control_rsp,  # late reply to an abandoned scan/connect
+            _envelope(seq=0, inner_msg=real_inner),
+        ]
+    )
+    proxy = SmpProxyTransport(base, address=1)
+
+    proxy.write_msg(smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=0))
+    rsp = proxy.read_msg(timeout=1)
+
+    assert rsp.decode_payload() == {"real": True}
+
+
 def test_outer_seq_is_shared_with_the_base_transport():
     """The outer envelope IS a message on base_transport, exactly like
     e.g. MgmtGrpProxyBle's scan/connect control commands sharing the same

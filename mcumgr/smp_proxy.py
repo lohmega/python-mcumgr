@@ -167,13 +167,19 @@ class SmpProxyTransport:
 
             msg = self.base_transport.read_msg(remaining)
 
-            if (
-                msg.hdr.nh_group == MGMT_GROUP_ID_PROXY_FWD_MGMT
-                and msg.hdr.nh_id == PROXY_FWD_MGMT_ID_FWD
-                and msg.hdr.nh_seq != self._last_outer_seq
-            ):
+            # nh_seq is drawn from base_transport.next_seq() - the same
+            # counter every conversation sharing that transport uses (e.g.
+            # MgmtGrpProxyBle's scan/connect control commands) - so a
+            # mismatch here is conclusive regardless of group/id: it cannot
+            # be the answer to the envelope we are waiting for, whether it
+            # is a late FWD response to an earlier, abandoned write_msg()
+            # or a late response to some other conversation entirely (a
+            # timed-out scan/connect control request, say).
+            if msg.hdr.nh_seq != self._last_outer_seq:
                 logger.debug(
-                    "discarding stale proxy envelope seq=%s (want %s)",
+                    "discarding stale response group=%s id=%s seq=%s (want %s)",
+                    msg.hdr.nh_group,
+                    msg.hdr.nh_id,
                     msg.hdr.nh_seq,
                     self._last_outer_seq,
                 )

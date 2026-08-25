@@ -480,6 +480,49 @@ def test_max_mtu_defaults_and_follows_the_link():
         assert t.max_mtu == smp.MGMT_MAX_MTU
 
 
+def test_write_fragments_across_multiple_att_writes_on_a_small_mtu():
+    """A write-without-response command has no ATT-level long-write
+    mechanism - it is hard-capped at the negotiated MTU. At a small/
+    un-negotiated MTU (23, BLE's default before exchange -> max_mtu=20),
+    a full SMP message can exceed that regardless of chunk-size tuning
+    (the fixed protocol overhead alone can exceed the budget), so it must
+    go out as several separate writes to the same characteristic - exactly
+    mirroring how _response_handler() already concatenates raw bytes
+    across separate notifications on the receive side."""
+    dev = FakeDev()
+    factory = FakeClientFactory(mtu_size=23)
+    with patch.object(transport_ble, "find_device", lambda *a, **k: dev), \
+            patch.object(transport_ble, "BleakClient", factory):
+        t = _mk_transport()
+        t.connect()
+        assert t.max_mtu == 20
+
+        data = bytes(range(45))  # 45 bytes, > one 20-byte write
+        t.write(data)
+
+    writes = factory.last.writes
+    assert len(writes) == 3, "45 bytes at a 20-byte cap must take 3 writes"
+    for uuid, chunk, response in writes:
+        assert uuid == UUID_CHARACT
+        assert response is False
+        assert len(chunk) <= 20
+    assert b"".join(w[1] for w in writes) == data, "fragments must reassemble exactly"
+
+
+def test_write_is_a_single_call_on_a_normal_mtu():
+    """The common case (a real negotiated MTU) must not be needlessly
+    split into multiple writes just because fragmentation now exists."""
+    dev = FakeDev()
+    factory = FakeClientFactory(mtu_size=247)
+    with patch.object(transport_ble, "find_device", lambda *a, **k: dev), \
+            patch.object(transport_ble, "BleakClient", factory):
+        t = _mk_transport()
+        t.connect()
+        t.write(b"\x00" * 100)
+
+    assert len(factory.last.writes) == 1
+
+
 def test_read_msg_times_out():
     t = _mk_transport()
     try:

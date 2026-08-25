@@ -183,23 +183,32 @@ class MgmtGrpImage(MgmtGrpBase):
         """Mark an image pending (test) or confirmed.
 
         Args:
-            img_hash: 32 byte image hash. If None, the hash of slot 1 is read
-                      from the device and used - i.e. "the image I just
-                      uploaded", which is what the mcumgr CLI does.
-
-                      Careful after a test boot: once the device has swapped,
-                      the image under test is the ACTIVE one in slot 0 and
-                      slot 1 holds the image it would revert to. Confirming
-                      without an explicit hash there confirms the old image.
-                      Pass the hash explicitly when confirming a test boot.
+            img_hash: 32 byte image hash. If None:
+                      - confirm=True: no hash is sent at all. The device's
+                        own img_mgmt handler resolves an absent hash to
+                        "confirm whatever is currently active" - correct
+                        both before and after a test boot's swap, unlike
+                        guessing a hash client-side ever could be (see
+                        below). This is a real, intentional feature of the
+                        wire protocol, not a fallback: the device rejects a
+                        hashless test() outright (IMG_MGMT_ERR_INVALID_HASH),
+                        precisely because "confirm active" is unambiguous
+                        but "test active" is not - so only confirm() gets
+                        this treatment.
+                      - confirm=False (test): the hash of slot 1 is read
+                        from the device and used - i.e. "the image I just
+                        uploaded", which is what the mcumgr CLI does. A
+                        hashless test() is invalid per the protocol, so
+                        there is no equivalent to omit here.
             confirm:  False marks the image pending (boots once, reverts
                       unless confirmed). True confirms it permanently.
             image_num: which image's slot 1 to default img_hash from, on a
-                      multi-image device. Only used when img_hash is None.
+                      multi-image device, for confirm=False only. Only used
+                      when img_hash is None.
 
         Returns the ImageState reported after the write.
         """
-        if img_hash is None:
+        if img_hash is None and not confirm:
             state = self.get_state(timeout=timeout)
             slot1 = state.slot(1, image_num)
             if slot1 is None or not slot1.hash:
@@ -207,9 +216,9 @@ class MgmtGrpImage(MgmtGrpBase):
             img_hash = slot1.hash
             logger.debug("using slot 1 hash %s", img_hash.hex())
 
-        img_hash = self._coerce_hash(img_hash)
-
-        data = {"hash": img_hash}
+        data = {}
+        if img_hash is not None:
+            data["hash"] = self._coerce_hash(img_hash)
         if confirm:
             data["confirm"] = True
 

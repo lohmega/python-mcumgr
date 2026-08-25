@@ -370,10 +370,27 @@ class SMPTransportBLE:
             raise smp.SMPDisconnectedError("Not connected")
 
         logger.debug("TX: %s", bytearray(data).hex())
-        _async_call(
-            self._clnt.write_gatt_char(UUID_CHARACT, data, response=False),
-            timeout=self._timeout,
-        )
+
+        # A "write without response" ATT command has no long-write mechanism
+        # of its own - it is hard-capped at the negotiated MTU (self.max_mtu
+        # already accounts for the ATT header). One full SMP message can
+        # exceed that: at a small or un-negotiated MTU (23, BLE's default
+        # before exchange), the SMP header plus the smallest possible CBOR
+        # map already exceeds the budget regardless of how small the
+        # payload chunk is sized, so no amount of chunk-size tuning alone
+        # can make it fit. Split across multiple consecutive writes to the
+        # same characteristic instead - the device's own BLE SMP transport
+        # concatenates raw bytes across separate writes exactly the same
+        # way _response_handler() below concatenates raw bytes across
+        # separate notifications; no extra per-fragment framing is needed
+        # on either side.
+        max_write = max(self.max_mtu, 1)
+        for off in range(0, len(data), max_write):
+            fragment = data[off : off + max_write]
+            _async_call(
+                self._clnt.write_gatt_char(UUID_CHARACT, fragment, response=False),
+                timeout=self._timeout,
+            )
 
     def write_msg(self, msg):
         self.write(msg.to_bytes())

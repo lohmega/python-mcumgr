@@ -91,6 +91,21 @@ class FakeDevice:
     def _do_state_write(self, req):
         img_hash = req.get("hash")
         confirm = req.get("confirm", False)
+
+        if img_hash is None:
+            # Matches the real device (img_mgmt_state.c): an omitted hash
+            # resolves to the active slot for confirm, and is rejected for
+            # test - there is no such thing as a hashless test.
+            if not confirm:
+                return {"rc": int(smp.MGMT_ERR.EINVAL)}
+            for i, s in enumerate(self.slots):
+                if s.get("active"):
+                    self.slots[i] = dict(s)
+                    self.slots[i]["confirmed"] = True
+                    self.slots[i]["permanent"] = True
+                    return {"images": self.slots, "splitStatus": 0}
+            return {"rc": int(smp.MGMT_ERR.ENOENT)}
+
         for i, s in enumerate(self.slots):
             if s.get("hash") == img_hash:
                 self.slots[i] = dict(s)
@@ -194,34 +209,43 @@ def test_confirm_sets_confirm_key():
     assert req == {"hash": h1, "confirm": True}
 
 
-def test_confirm_without_hash_uses_slot1():
-    h1 = b"\x02" * 32
-    dev = FakeDevice(slots=[_slot(0, b"\x01" * 32), _slot(1, h1)])
+def test_confirm_without_hash_sends_no_hash():
+    """confirm() with no explicit hash must not guess slot 1's hash and
+    send that - it must send no hash field at all, so the device's own
+    img_mgmt handler resolves it to whatever is currently active. That is
+    correct both before AND after a test boot's swap; a client-side guess
+    of "slot 1" is only ever correct in the former case (see
+    test_confirm_without_hash_after_swap_still_confirms_active below) -
+    this is the actual behavior the device's protocol supports, not a
+    workaround for it.
+    """
+    dev = FakeDevice(slots=[_slot(0, b"\x01" * 32), _slot(1, b"\x02" * 32)])
     grp = MgmtGrpImage(dev)
 
     grp.confirm()
     _op, _id, req = dev.requests[-1]
-    assert req["hash"] == h1
+    assert "hash" not in req
+    assert req["confirm"] is True
+    assert dev.slots[0]["confirmed"], "must confirm the active slot (0)"
 
 
-def test_confirm_without_hash_is_scoped_to_image_num():
-    """On a multi-image device, defaulting the hash must use the requested
-    image's slot 1, not whichever image happens to report slot 1 first."""
-    image0_slot1 = b"\x02" * 32
-    image1_slot1 = b"\x03" * 32
+def test_confirm_without_hash_after_swap_still_confirms_active():
+    """The exact scenario the old slot-1-guessing behavior got wrong: after
+    a test boot, the image under test is active in slot 0 and slot 1 holds
+    the fallback. confirm() with no hash must confirm slot 0 (active), not
+    slot 1 (guessed)."""
     dev = FakeDevice(
         slots=[
-            _slot(0, b"\x01" * 32, image=0),
-            _slot(1, image0_slot1, image=0),
-            _slot(0, b"\x04" * 32, image=1),
-            _slot(1, image1_slot1, image=1),
+            _slot(0, b"\x99" * 32, pending=False, confirmed=False, active=True),
+            _slot(1, b"\x11" * 32, confirmed=True, active=False),
         ]
     )
     grp = MgmtGrpImage(dev)
 
-    grp.confirm(image_num=1)
-    _op, _id, req = dev.requests[-1]
-    assert req["hash"] == image1_slot1, "must confirm image 1's slot, not image 0's"
+    grp.confirm()
+
+    assert dev.slots[0]["confirmed"], "the just-tested image (slot 0) must be confirmed"
+    assert dev.slots[1]["hash"] == b"\x11" * 32  # untouched fallback
 
 
 def test_hash_accepts_hex_string():
