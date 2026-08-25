@@ -8,7 +8,29 @@ import sys
 
 sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(__file__), "..")))
 
+from mcumgr import smp
 from mcumgr.mgmt_proxy_ble import MgmtGrpProxyBle
+
+
+class QueueTransport:
+    """Transport that replays a scripted list of responses (see
+    test_mgmt.py's identically-named helper)."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.sent = []
+        self._seq = smp.SeqCounter()
+
+    def next_seq(self):
+        return self._seq.next()
+
+    def write_msg(self, msg):
+        self.sent.append(msg)
+
+    def read_msg(self, timeout=None):
+        if not self._responses:
+            raise smp.SMPTransportError("no more responses")
+        return self._responses.pop(0)
 
 
 class ScriptedProxy(MgmtGrpProxyBle):
@@ -74,6 +96,30 @@ def test_scan_with_callback_stops_as_soon_as_it_signals_stop():
     assert seen == [1]
     assert [d["address"] for d in result] == [1]
     assert proxy._batches == [[{"address": 2}]], "must not have polled again"
+
+
+def test_scan_start_propagates_a_device_error():
+    """EBUSY/ENOTSUP etc rejecting scan startup must surface immediately,
+    not get silently ignored until scan() times out polling for results
+    that were never going to arrive because scanning never started."""
+    from mcumgr.mgmt_proxy_ble import MGMT_GROUP_ID_SMP_PROXY_BLE, SMP_PROXY_ID_BLE_SCAN_CTL
+
+    rsp = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP,
+        nh_group=MGMT_GROUP_ID_SMP_PROXY_BLE,
+        nh_id=SMP_PROXY_ID_BLE_SCAN_CTL,
+        nh_seq=0,
+    )
+    rsp.encode_payload({"rc": int(smp.MGMT_ERR.EBUSY)})
+
+    proxy = MgmtGrpProxyBle(QueueTransport([rsp]))
+
+    try:
+        proxy.scan_start()
+    except smp.MgmtEndpointError as e:
+        assert e.rc == int(smp.MGMT_ERR.EBUSY)
+    else:
+        raise AssertionError("expected MgmtEndpointError for EBUSY")
 
 
 def main():

@@ -43,9 +43,13 @@ class MgmtGrpProxyBle(MgmtGrpBase):
 
 
     def scan_start(self):
+        # check=True: if the proxy rejects this (EBUSY, ENOTSUP, ...) the
+        # caller needs to know now, not after scan()'s full timeout has
+        # elapsed polling for results that were never going to arrive
+        # because scanning was never actually started.
         return self.mh_scan_ctl.mh_write({
             "enable": True
-        })
+        }, check=True)
 
     def scan_stop(self):
         return self.mh_scan_ctl.mh_write({

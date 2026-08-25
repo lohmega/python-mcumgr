@@ -47,10 +47,17 @@ class SmpProxyTransport:
         self.media = media
         self.address = address
         self.timeout = timeout
-        # sequence for the proxy envelope itself. The seq for the wrapped
-        # messages to the end device comes from next_seq() below, so the two
-        # conversations do not share a counter.
-        self._seq = smp.SeqCounter()
+        # The outer proxy envelope IS a message on base_transport, exactly
+        # like e.g. MgmtGrpProxyBle's scan/connect control commands sharing
+        # the same connection - so its nh_seq must come from
+        # base_transport.next_seq() too, not an independent counter. Two
+        # counters both starting at 0 would let an outer envelope reuse a
+        # seq a control response is still in flight for, and the stale-seq
+        # filter in read_msg() below would then let that stale response
+        # through as if it were a match. The seq for messages addressed to
+        # the wrapped end device is a genuinely separate conversation (it
+        # only exists inside the envelope's decoded payload, invisible to
+        # base_transport's own queue) and keeps its own counter.
         self._target_seq = smp.SeqCounter()
         # nh_seq of the outer proxy envelope write_msg() most recently sent,
         # so read_msg() can tell a stale/late envelope (e.g. the response to
@@ -110,7 +117,7 @@ class SmpProxyTransport:
         proxy_msg.hdr.nh_op = smp.MGMT_OP.WRITE
         proxy_msg.hdr.nh_group = MGMT_GROUP_ID_PROXY_FWD_MGMT
         proxy_msg.hdr.nh_id = PROXY_FWD_MGMT_ID_FWD
-        proxy_msg.hdr.nh_seq = self._seq.next()
+        proxy_msg.hdr.nh_seq = self.base_transport.next_seq()
         self._last_outer_seq = proxy_msg.hdr.nh_seq
 
         # Build CBOR payload with proxy envelope

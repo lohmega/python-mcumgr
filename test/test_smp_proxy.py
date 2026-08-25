@@ -24,9 +24,13 @@ class FakeBaseTransport:
 
     def __init__(self, max_mtu):
         self.max_mtu = max_mtu
+        self._seq = smp.SeqCounter()
 
     def is_connected(self):
         return True
+
+    def next_seq(self):
+        return self._seq.next()
 
 
 def _envelope(seq, inner_msg):
@@ -125,6 +129,25 @@ def test_read_msg_discards_a_stale_outer_envelope():
     rsp = proxy.read_msg(timeout=1)
 
     assert rsp.decode_payload() == {"real": True}
+
+
+def test_outer_seq_is_shared_with_the_base_transport():
+    """The outer envelope IS a message on base_transport, exactly like
+    e.g. MgmtGrpProxyBle's scan/connect control commands sharing the same
+    connection - it must draw from that transport's own counter, not an
+    independent one that could reissue a seq a control response is still
+    in flight for."""
+    base = ScriptedBaseTransport([], max_mtu=256)
+    # Simulate prior, unrelated control-plane traffic on this connection
+    # (e.g. MgmtGrpProxyBle.scan_start()) having already advanced the
+    # shared counter past 0.
+    base.next_seq()
+    base.next_seq()
+    proxy = SmpProxyTransport(base, address=1)
+
+    proxy.write_msg(smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=0))
+
+    assert base.sent[0].hdr.nh_seq == 2, "must continue the shared counter, not restart at 0"
 
 
 def main():
