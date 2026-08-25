@@ -72,6 +72,7 @@ class FakeSerial:
         self.written = bytearray()
         self.flushed = 0
         self.line_on_close = None
+        self.write_error = None
         self._q = queue.Queue()
 
     def feed(self, line):
@@ -91,6 +92,8 @@ class FakeSerial:
         return item
 
     def write(self, data):
+        if self.write_error is not None:
+            raise self.write_error
         self.written.extend(data)
         return len(data)
 
@@ -409,6 +412,32 @@ def test_reconnect_starts_a_fresh_reader_and_drains_the_queue():
             factory.last.feed(NlipPkt().pack(_msg(seq=7).to_bytes()))
             assert t.read_msg(timeout=5).hdr.nh_seq == 7
         finally:
+            t.disconnect()
+
+
+def test_write_failure_is_reported_as_disconnected():
+    """A broken port (unplugged cable) raised directly from write()/
+    flush() must surface as SMPDisconnectedError, exactly like the
+    equivalent readline() failure already does - it matched neither of
+    mgmt_image.upload()'s except clauses otherwise and escaped uncaught,
+    bypassing the reconnect budget entirely (worse than the read-side
+    case, which at least fell through to a generic retry)."""
+    import serial as pyserial
+
+    factory = FakeSerialFactory()
+    with patch.object(transport_serial.serial, "Serial", factory):
+        t = _mk_transport(factory)
+        t.connect()
+        try:
+            factory.last.write_error = pyserial.SerialException("device disconnected")
+            try:
+                t.write_msg(_msg(seq=1))
+            except smp.SMPDisconnectedError:
+                pass
+            else:
+                raise AssertionError("expected SMPDisconnectedError")
+        finally:
+            factory.last.write_error = None
             t.disconnect()
 
 

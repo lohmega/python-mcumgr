@@ -440,8 +440,21 @@ class SMPTransportSerial:
         lines = nlip.pack_lines(data)
         logger.debug("TX: %s", str(lines))
         data = bytes().join(lines)
-        self._ser.write(data)
-        self._ser.flush()
+        try:
+            self._ser.write(data)
+            self._ser.flush()
+        except Exception as e:
+            # A broken port (unplugged cable, vanished device) raises here
+            # directly - the reader thread already translates the
+            # equivalent readline() failure into SMPDisconnectedError (see
+            # _read_thread_worker), but this write-side one previously
+            # propagated as a raw SerialException/OSError. That matches
+            # neither of mgmt_image.upload()'s except clauses
+            # (SMPDisconnectedError triggers reconnect; plain
+            # SMPTransportError just retries), so it escaped uncaught -
+            # worse than the readline() case, which at least fell through
+            # to the generic retry-then-give-up path.
+            raise smp.SMPDisconnectedError(str(e)) from e
 
     def write_msg(self, msg):
         """ pack smp msg and write """
