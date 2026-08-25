@@ -144,6 +144,32 @@ def test_scan_start_propagates_a_device_error():
         raise AssertionError("expected MgmtEndpointError for EBUSY")
 
 
+def test_scan_result_propagates_a_device_error():
+    """Regression: scan_result() used check=False, so an explicit error rc
+    (scanning stopped unexpectedly, etc.) was silently turned into an
+    empty results list - _scan_result_poll() would just keep polling for
+    the full timeout and report no devices instead of surfacing the
+    actual failure."""
+    from mcumgr.mgmt_proxy_ble import MGMT_GROUP_ID_SMP_PROXY_BLE, SMP_PROXY_ID_BLE_SCAN_RESULT
+
+    rsp = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.READ_RSP,
+        nh_group=MGMT_GROUP_ID_SMP_PROXY_BLE,
+        nh_id=SMP_PROXY_ID_BLE_SCAN_RESULT,
+        nh_seq=0,
+    )
+    rsp.encode_payload({"rc": int(smp.MGMT_ERR.EUNKNOWN)})
+
+    proxy = MgmtGrpProxyBle(QueueTransport([rsp]))
+
+    try:
+        proxy.scan_result()
+    except smp.MgmtEndpointError as e:
+        assert e.rc == int(smp.MGMT_ERR.EUNKNOWN)
+    else:
+        raise AssertionError("expected MgmtEndpointError for a scan_result error rc")
+
+
 def test_scan_result_passes_the_remaining_timeout_through():
     """scan_result()'s read must be bounded by whatever is left of the
     overall scan timeout - not mh_read()'s default, which falls back to

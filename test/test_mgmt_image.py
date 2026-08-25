@@ -783,6 +783,50 @@ def test_upload_restarts_on_an_offset_past_file_size():
     assert bytes(dev.received) == data, "must restart, not report a bogus complete"
 
 
+def test_upload_restarts_on_an_offset_exactly_equal_to_file_size():
+    """The boundary case of the above: a device holding a DIFFERENT,
+    already-complete upload of the exact same size as this file. Its
+    reported offset equals file_size exactly (not beyond it), but on the
+    very first response this call (before we have sent anything of our
+    own) that is just as impossible to be legitimate progress on THIS
+    file as an offset past it - must also force a restart, not report a
+    bogus complete=True having sent nothing.
+    """
+    path, data, digest = _img_file()
+    dev = FakeDevice(slots=[])
+    dev.upload_off = len(data)  # exactly file_size - an unrelated same-size upload
+    dev.total_len = len(data)
+    dev.received = bytearray(b"\xdd" * len(data))
+
+    grp = MgmtGrpImage(dev)
+    res = grp.upload(path, resume=True)
+
+    assert res.complete
+    assert res.off == len(data)
+    assert bytes(dev.received) == data, "must restart, not report a bogus complete"
+
+
+def test_upload_does_not_restart_its_own_completed_transfer():
+    """The normal case new_off == file_size legitimately covers: our own
+    upload's last chunk lands and the device correctly reports off ==
+    file_size on a LATER response this call (after resumed_off is
+    already set). Must not be mistaken for the stale-context case above
+    and forced to restart right after finishing."""
+    path, data, digest = _img_file()
+    dev = FakeDevice(slots=[])
+    grp = MgmtGrpImage(dev)
+
+    res = grp.upload(path, resume=True)
+
+    assert res.complete
+    assert res.off == len(data)
+    uploads = [r for r in dev.requests if r[1] == IMG_MGMT_ID_UPLOAD]
+    # A restart would show a second off=0/len=... request after the first
+    # transfer already reached the end - there must be exactly one.
+    starts = [r for _op, _id, r in uploads if r.get("off") == 0 and "len" in r]
+    assert len(starts) == 1, "must not restart a transfer that just completed"
+
+
 def test_upload_error_rc_raises():
     class FailingDevice(FakeDevice):
         def _do_upload(self, req):

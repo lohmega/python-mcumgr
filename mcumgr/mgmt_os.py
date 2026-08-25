@@ -52,9 +52,13 @@ class MgmtGrpOs(MgmtGrpBase):
 
         The device may reset before answering, so a timeout while waiting for
         the response is not necessarily a failure - but a failure to send the
-        request at all still is.
+        request at all still is. check=True so an explicit rejection (e.g.
+        ENOTSUP, EACCESSDENIED) is not silently treated as a successful
+        reset just because tolerate_no_response covers the no-answer case.
         """
-        return self.mh_reset.mh_write(timeout=timeout, tolerate_no_response=True)
+        return self.mh_reset.mh_write(
+            timeout=timeout, check=True, tolerate_no_response=True
+        )
 
     def taskstats(self, timeout=None):
         rsp = self.mh_taskstats.mh_read(check=True, timeout=timeout)

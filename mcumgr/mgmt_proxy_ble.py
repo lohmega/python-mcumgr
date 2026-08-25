@@ -57,7 +57,12 @@ class MgmtGrpProxyBle(MgmtGrpBase):
         })
 
     def scan_result(self, timeout=None):
-        rsp = self.mh_scan_result.mh_read(timeout=timeout)
+        # check=True, matching scan_start(): an explicit error rc here
+        # (scanning stopped unexpectedly, etc.) was previously indistinguishable
+        # from "no results yet" - _scan_result_poll() would just keep
+        # polling for the full timeout and report an empty scan instead of
+        # surfacing the actual device failure.
+        rsp = self.mh_scan_result.mh_read(check=True, timeout=timeout)
         return rsp.get("results", [])
 
     def scan_filter_set(self, filters):

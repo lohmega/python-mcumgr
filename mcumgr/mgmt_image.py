@@ -472,17 +472,28 @@ class MgmtGrpImage(MgmtGrpBase):
                 )
 
             new_off = rsp["off"]
-            if new_off > file_size:
+            # new_off == file_size is only suspicious on the very first
+            # response this call (resumed_off still None, i.e. before we
+            # have sent any real chunk of our own yet) - a device claiming
+            # to already hold the complete file before we sent it anything
+            # can only be a stale, unrelated context of the same size. On
+            # a later iteration new_off == file_size is exactly the normal,
+            # correct signal that our own transfer's last chunk just landed
+            # - must not be treated the same way, or every successful
+            # upload's final response would be mistaken for a stale one and
+            # forced to restart from scratch right after finishing.
+            if new_off > file_size or (new_off == file_size and resumed_off is None):
                 # Cannot be a legitimate resume point for THIS file - it is
-                # the device's own leftover context from some other, larger
-                # upload. Blindly continuing from here would either splice
-                # new bytes onto an unrelated prefix, or (since off would
+                # the device's own leftover context from some other upload.
+                # Blindly continuing from here would either splice new
+                # bytes onto an unrelated prefix, or (since off would
                 # already be >= file_size) exit the loop immediately and
                 # report a bogus `complete=True` having sent nothing at all.
                 # Force a clean restart instead.
                 logger.warning(
-                    "device offset %d exceeds this image's size %d - "
-                    "forcing a restart from 0",
+                    "device offset %d is at or beyond this image's size %d "
+                    "before any data was sent this call - forcing a "
+                    "restart from 0",
                     new_off,
                     file_size,
                 )
