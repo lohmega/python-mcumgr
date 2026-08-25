@@ -279,9 +279,13 @@ class MgmtGrpImage(MgmtGrpBase):
     @property
     def _max_chunk(self):
         max_mtu = getattr(self.transport, "max_mtu", smp.MGMT_MAX_MTU)
-        if max_mtu >= 64:
-            return max_mtu - UPLOAD_CHUNK_OVERHEAD
-        return max_mtu
+        # Always reserve the SMP header + CBOR map overhead, even on a small
+        # or un-negotiated MTU (e.g. BLE's un-negotiated default of 23) -
+        # returning the whole MTU as data there produced a request bigger
+        # than the link could carry, guaranteed to fail on write. A floor of
+        # 1 keeps this from going to zero/negative on a degenerate MTU
+        # instead of silently never making progress.
+        return max(max_mtu - UPLOAD_CHUNK_OVERHEAD, 1)
 
     def upload(
         self,
@@ -359,8 +363,10 @@ class MgmtGrpImage(MgmtGrpBase):
             # This off=0/"len" request is the very first one sent on this
             # upload - same situation UPLOAD_FIRST_CHUNK_SIZE exists for on
             # the probe path: keep it small since the link has not proven it
-            # can carry a full-size write yet.
-            chunk_size = UPLOAD_FIRST_CHUNK_SIZE
+            # can carry a full-size write yet. Clamped to _max_chunk too - on
+            # a small/un-negotiated MTU even 32 bytes of data can be too much
+            # once wrapped.
+            chunk_size = min(UPLOAD_FIRST_CHUNK_SIZE, self._max_chunk)
 
         num_timeouts = 0
         start_t = time.monotonic()
@@ -470,8 +476,15 @@ class MgmtGrpImage(MgmtGrpBase):
 
             # The device answering 0 means it has no upload context, so the
             # next request is the real first one: keep it small and carry
-            # "len". Otherwise open up to the full MTU.
-            chunk_size = UPLOAD_FIRST_CHUNK_SIZE if new_off == 0 else self._max_chunk
+            # "len". Otherwise open up to the full MTU. Clamped to
+            # _max_chunk - on a small/un-negotiated MTU even
+            # UPLOAD_FIRST_CHUNK_SIZE bytes of data can be too much once
+            # wrapped in the SMP header and CBOR map.
+            chunk_size = (
+                min(UPLOAD_FIRST_CHUNK_SIZE, self._max_chunk)
+                if new_off == 0
+                else self._max_chunk
+            )
 
             if new_off <= off and not (off == UPLOAD_PROBE_OFFSET and new_off == 0):
                 # No forward progress. Tolerate a couple of these (a device may

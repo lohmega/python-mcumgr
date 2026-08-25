@@ -307,6 +307,26 @@ def test_upload_probes_before_declaring_len():
     assert len(third["data"]) > UPLOAD_FIRST_CHUNK_SIZE
 
 
+def test_max_chunk_reserves_overhead_even_on_a_tiny_mtu():
+    """A small/un-negotiated MTU (e.g. BLE's un-negotiated default of 23)
+    must not make _max_chunk return the whole MTU as data - the SMP header
+    and CBOR map still need to fit inside it too. 23 is below
+    UPLOAD_CHUNK_OVERHEAD, so no positive chunk size can actually make a
+    request fit; the floor of 1 is the least-bad, honest answer rather
+    than pretending the whole 23 bytes are available for data."""
+    dev = FakeDevice(slots=[], max_mtu=23)
+    grp = MgmtGrpImage(dev)
+
+    assert grp._max_chunk == 1
+
+
+def test_max_chunk_reserves_overhead_on_a_realistic_small_mtu():
+    dev = FakeDevice(slots=[], max_mtu=64)
+    grp = MgmtGrpImage(dev)
+
+    assert grp._max_chunk == 64 - 32  # UPLOAD_CHUNK_OVERHEAD
+
+
 def test_upload_resumes_partial():
     path, data, _ = _img_file()
     dev = FakeDevice(slots=[])
