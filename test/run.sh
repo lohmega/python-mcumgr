@@ -16,7 +16,7 @@ BASE_DIR=$(_realpath "$THIS_DIR/../")
 PYTHON=${PYTHON:-python3}
 rc=0
 
-for t in test_image.py test_mgmt.py test_mgmt_image.py test_transport_serial.py test_transport_ble.py test_smp_proxy.py; do
+for t in test_image.py test_mgmt.py test_mgmt_image.py test_transport_serial.py test_transport_ble.py test_smp_proxy.py test_ble_compat.py; do
     echo "=== $t ==="
     PYTHONPATH="$BASE_DIR:$PYTHONPATH" "$PYTHON" "$THIS_DIR/$t" || rc=1
 done
