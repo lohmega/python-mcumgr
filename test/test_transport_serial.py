@@ -83,6 +83,11 @@ class FakeSerial:
         if item is _CLOSED:
             # pyserial aborts a blocked read when the port is closed
             raise OSError("attempting to use a port that is not open")
+        if isinstance(item, Exception):
+            # feed()ing an exception simulates a real port failure (e.g. a
+            # genuine serial.SerialException for an unplugged cable),
+            # distinct from the intentional-close OSError above.
+            raise item
         return item
 
     def write(self, data):
@@ -299,6 +304,33 @@ def test_reader_survives_a_corrupt_frame():
             assert out is not None, "good message never arrived after a bad one"
             assert out.hdr.nh_seq == 9
             assert out.decode_payload()["ok"] is True
+        finally:
+            t.disconnect()
+
+
+def test_port_failure_is_reported_as_disconnected():
+    """readline() only raises when the port itself is broken (a plain
+    timeout returns an empty/partial read here, not an exception) - that
+    must surface as SMPDisconnectedError specifically, not a raw
+    SerialException/OSError, since mgmt_image.upload()'s reconnect
+    handling only triggers on that type. Queueing the raw exception meant
+    a real serial disconnect fell through to the plain-timeout retry path
+    instead and never used the reconnects budget at all."""
+    factory = FakeSerialFactory()
+    with patch.object(transport_serial.serial, "Serial", factory):
+        t = _mk_transport(factory)
+        t.connect()
+        try:
+            import serial as pyserial
+
+            factory.last.feed(pyserial.SerialException("device disconnected"))
+
+            try:
+                t.read_msg(timeout=5)
+            except smp.SMPDisconnectedError:
+                pass
+            else:
+                raise AssertionError("expected SMPDisconnectedError")
         finally:
             t.disconnect()
 

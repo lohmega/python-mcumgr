@@ -227,6 +227,28 @@ def test_malformed_cbor_response_raises_response_error():
         raise AssertionError("expected SMPResponseError for malformed CBOR")
 
 
+def test_non_map_cbor_response_raises_response_error():
+    """Valid CBOR that decodes to something other than a map (a list, a
+    bare int, ...) must not reach the "rc"/"err" membership and .get()
+    calls below - those assume a dict and raise a raw TypeError/
+    AttributeError on anything else, escaping main()'s exception chain."""
+
+    class NonMapResponseTransport(QueueTransport):
+        def read_msg(self, timeout=None):
+            m = smp.MgmtMsg(nh_op=smp.MGMT_OP.WRITE_RSP, nh_group=1, nh_id=0, nh_seq=0)
+            m.set_payload(cbor.dumps([1, 2, 3]))
+            return m
+
+    t = NonMapResponseTransport([])
+    ep = MgmtGrpEndpoint(t, 1, 0)
+    try:
+        ep.mh_write({"x": 1})
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError for a non-map CBOR response")
+
+
 def test_endpoints_share_the_transport_sequence():
     """Two endpoints must not hand out colliding sequence numbers."""
     t = QueueTransport(

@@ -299,10 +299,24 @@ class SMPTransportSerial:
                 if stop_evt.is_set() or not ser.is_open:
                     # Expected: the port was closed under us on purpose.
                     break
+                # readline() only raises when the port itself is broken (a
+                # plain read timeout returns an empty/partial read, not an
+                # exception, given this transport always configures one) -
+                # SerialException/OSError for an unplugged cable or a port
+                # that vanished. That is exactly what SMPDisconnectedError
+                # means: retrying the same write cannot help, the link has
+                # to be rebuilt first. Queueing the raw exception instead
+                # left mgmt_image.upload()'s reconnect handling entirely
+                # unreachable for a real serial disconnect - it only
+                # triggers on SMPDisconnectedError, so this fell through to
+                # the plain-timeout retry path instead, burned the whole
+                # timeout budget retrying a dead port, then gave up without
+                # ever using the reconnects budget the caller asked for.
+                dc = smp.SMPDisconnectedError(str(e))
                 if read_cb:
-                    read_cb(e)
+                    read_cb(dc)
                 else:
-                    msg_queue.put_nowait(e)
+                    msg_queue.put_nowait(dc)
                 break
 
             if stop_evt.is_set():

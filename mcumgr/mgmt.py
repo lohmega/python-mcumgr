@@ -97,6 +97,15 @@ class MgmtGrpEndpoint:
                 raise smp.SMPResponseError(
                     "Malformed CBOR in response: {}".format(e)
                 ) from e
+            if not isinstance(response, dict):
+                # Valid CBOR, just not a map - an SMP response body is
+                # always one. The membership/`.get()` calls below assume a
+                # dict; a list or bare scalar decoding successfully would
+                # otherwise reach them and raise a raw TypeError/
+                # AttributeError instead of the documented transport error.
+                raise smp.SMPResponseError(
+                    "Response payload is not a CBOR map: {!r}".format(response)
+                )
         else:
             response = {}
 

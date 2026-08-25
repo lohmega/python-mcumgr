@@ -101,6 +101,7 @@ class MgmtGrpProxyBle(MgmtGrpBase):
         # "list of all discovered devices" contract by only ever reporting
         # whatever happened to be visible in the first poll cycle.
         ret = []
+        seen_addrs = set()
         while True:
             if timeout:
                 elapsed = time.time() - start_time
@@ -117,8 +118,25 @@ class MgmtGrpProxyBle(MgmtGrpBase):
                 if result_cb:
                     keep = result_cb(candidate)
 
-                if keep:
-                    ret.append(candidate)
+                if not keep:
+                    continue
+
+                # scan_result() commonly reports the same device again on a
+                # later poll (a cumulative results buffer, not a
+                # consume-once one) - without a callback there is nothing
+                # else filtering repeats out, so the same address could
+                # otherwise be appended on every single poll for the whole
+                # timeout window. The callback path does not need this: it
+                # already returns as soon as its first kept candidate
+                # arrives (see below), so duplicates across separate polls
+                # can never accumulate there regardless.
+                addr = candidate.get("address")
+                if addr is not None:
+                    if addr in seen_addrs:
+                        continue
+                    seen_addrs.add(addr)
+
+                ret.append(candidate)
 
             if result_cb and ret:
                 # A callback signaled "stop scanning" (kept a candidate).

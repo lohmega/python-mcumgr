@@ -73,6 +73,26 @@ def test_scan_without_callback_collects_the_full_timeout_window():
     assert proxy.stopped == 1
 
 
+def test_scan_without_callback_deduplicates_repeat_sightings():
+    """scan_result() commonly reports the same device again on a later
+    poll (a cumulative results buffer, not consume-once) - without a
+    result_cb there is nothing else filtering that out, so the same
+    address must not be appended once per poll it happens to still be
+    visible in."""
+    batches = [
+        [{"address": 1}],
+        [{"address": 1}, {"address": 2}],  # 1 seen again, plus a new one
+        [{"address": 1}, {"address": 2}],  # both seen again
+        [],
+    ]
+    proxy = ScriptedProxy(batches)
+
+    result = proxy.scan(timeout=0.2, poll_interval=0.03)
+
+    addrs = [d["address"] for d in result]
+    assert sorted(addrs) == [1, 2], "each address must appear exactly once"
+
+
 def test_scan_without_callback_returns_empty_list_on_timeout():
     proxy = ScriptedProxy([[], [], []])
 
