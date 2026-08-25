@@ -2,6 +2,7 @@
 
 import cbor2 as cbor
 import logging
+import struct
 import time
 from . import smp
 from .mgmt_proxy_ble import MgmtGrpProxyBle
@@ -209,7 +210,12 @@ class SmpProxyTransport:
         if not msg.payload:
             raise smp.SMPResponseError("Empty proxy response payload")
 
-        proxy_data = cbor.loads(msg.payload)
+        try:
+            proxy_data = cbor.loads(msg.payload)
+        except cbor.CBORDecodeError as e:
+            raise smp.SMPResponseError(
+                "Malformed CBOR in proxy response: {}".format(e)
+            ) from e
 
         # Check for proxy-level error
         if "rc" in proxy_data:
@@ -231,8 +237,17 @@ class SmpProxyTransport:
 
         logger.debug(f"Unwrapped SMP response from proxy: size={len(original_msg_bytes)}")
 
-        # Parse and return the original SMP message
-        return smp.MgmtMsg.from_bytes(original_msg_bytes)
+        # Parse and return the original SMP message. from_bytes() raises
+        # IndexError for a truncated message; a "d" value of the wrong CBOR
+        # type (not a bytestring) can also reach struct.unpack() as
+        # TypeError. Both mean the proxy's response, though well-formed
+        # CBOR, wrapped something that is not a valid SMP message.
+        try:
+            return smp.MgmtMsg.from_bytes(original_msg_bytes)
+        except (IndexError, TypeError, struct.error) as e:
+            raise smp.SMPResponseError(
+                "Malformed wrapped SMP message in proxy response: {}".format(e)
+            ) from e
 
 
     def __enter__(self):

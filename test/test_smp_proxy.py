@@ -232,6 +232,51 @@ def test_read_msg_raises_response_error_on_wrong_group():
         raise AssertionError("expected SMPResponseError")
 
 
+def test_read_msg_raises_response_error_on_malformed_cbor():
+    garbage = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP,
+        nh_group=MGMT_GROUP_ID_PROXY_FWD_MGMT,
+        nh_id=PROXY_FWD_MGMT_ID_FWD,
+        nh_seq=0,
+    )
+    garbage.set_payload(b"\xa5")  # truncated CBOR map header, invalid
+
+    base = ScriptedBaseTransport([garbage])
+    proxy = SmpProxyTransport(base, address=1)
+    proxy.write_msg(smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=0))
+
+    try:
+        proxy.read_msg(timeout=1)
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError for malformed CBOR")
+
+
+def test_read_msg_raises_response_error_on_a_truncated_wrapped_message():
+    """The proxy envelope's own CBOR is fine and carries a "d" field, but
+    the bytes inside it are too short to be a valid SMP message - a
+    different failure mode than the envelope itself being malformed."""
+    rsp = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP,
+        nh_group=MGMT_GROUP_ID_PROXY_FWD_MGMT,
+        nh_id=PROXY_FWD_MGMT_ID_FWD,
+        nh_seq=0,
+    )
+    rsp.encode_payload({"d": b"\x00\x01\x02"})  # far too short for an SMP header
+
+    base = ScriptedBaseTransport([rsp])
+    proxy = SmpProxyTransport(base, address=1)
+    proxy.write_msg(smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=0))
+
+    try:
+        proxy.read_msg(timeout=1)
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError for a truncated wrapped message")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

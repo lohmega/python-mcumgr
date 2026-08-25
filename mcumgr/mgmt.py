@@ -83,13 +83,43 @@ class MgmtGrpEndpoint:
                 )
             )
 
-        response = cbor.loads(rsp.payload) if rsp.payload else {}
+        if rsp.payload:
+            try:
+                response = cbor.loads(rsp.payload)
+            except cbor.CBORDecodeError as e:
+                # A response WAS received, its CBOR is just broken - a real
+                # transport integrity problem, matching SMPResponseError's
+                # contract (see smp.py). Leaving this as a raw decoder
+                # exception meant no caller in this codebase's exception
+                # chain (including main()'s) ever caught it, so a single
+                # corrupted response produced a traceback instead of the
+                # documented transport-error exit.
+                raise smp.SMPResponseError(
+                    "Malformed CBOR in response: {}".format(e)
+                ) from e
+        else:
+            response = {}
 
-        # Check for error code in response if requested
-        if check and "rc" in response:
-            rc = response["rc"]
-            if rc != 0:
+        # Check for error code in response if requested. Modern SMP v2
+        # group-error responses (smp_add_cmd_err() device-side - used by
+        # e.g. an app-level MGMT_EVT_OP_CMD_RECV hook rejecting a command
+        # via some means other than a plain nonzero handler rc) put the
+        # error under "err": {"group":.., "rc":..} instead of a top-level
+        # "rc" - the ordinary case for a handler's own nonzero return
+        # (image erase/confirm/upload/os reset all go through this path in
+        # every real device tested against this branch) still uses the
+        # legacy top-level "rc" this always checked, so this is additive.
+        if check:
+            rc = None
+            rsn = None
+            if "rc" in response:
+                rc = response["rc"]
                 rsn = response.get("rsn")
+            elif isinstance(response.get("err"), dict) and "rc" in response["err"]:
+                err = response["err"]
+                rc = err["rc"]
+                rsn = "group {}".format(err["group"]) if "group" in err else None
+            if rc:
                 raise smp.MgmtEndpointError("SMP command failed", rc=rc, rsn=rsn)
 
         return response

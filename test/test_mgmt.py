@@ -184,6 +184,49 @@ def test_rc_zero_is_not_an_error():
     assert ep.mh_write({"x": 1}, check=True) == {"rc": 0}
 
 
+def test_check_raises_on_smp_v2_group_error():
+    """SMP v2's alternate error shape (smp_add_cmd_err() device-side, used
+    by e.g. an app-level command-recv hook rejecting via something other
+    than a plain nonzero handler rc): {"err": {"group":.., "rc":..}}
+    instead of a top-level "rc". Must be caught too, not just the legacy
+    shape every real device tested against this branch actually uses."""
+    t = QueueTransport(
+        [_rsp(0, group=1, cmd_id=0, payload={"err": {"group": 1, "rc": 10}})]
+    )
+    ep = MgmtGrpEndpoint(t, 1, 0)
+    try:
+        ep.mh_write({"x": 1}, check=True)
+    except smp.MgmtEndpointError as e:
+        assert e.rc == 10
+    else:
+        raise AssertionError("expected MgmtEndpointError for an SMP v2 group error")
+
+
+def test_check_ignores_an_err_map_with_rc_zero():
+    t = QueueTransport(
+        [_rsp(0, group=1, cmd_id=0, payload={"err": {"group": 1, "rc": 0}})]
+    )
+    ep = MgmtGrpEndpoint(t, 1, 0)
+    assert ep.mh_write({"x": 1}, check=True) == {"err": {"group": 1, "rc": 0}}
+
+
+def test_malformed_cbor_response_raises_response_error():
+    class GarbageResponseTransport(QueueTransport):
+        def read_msg(self, timeout=None):
+            m = smp.MgmtMsg(nh_op=smp.MGMT_OP.WRITE_RSP, nh_group=1, nh_id=0, nh_seq=0)
+            m.set_payload(b"\xa5")  # truncated CBOR map header, invalid
+            return m
+
+    t = GarbageResponseTransport([])
+    ep = MgmtGrpEndpoint(t, 1, 0)
+    try:
+        ep.mh_write({"x": 1})
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError for malformed CBOR")
+
+
 def test_endpoints_share_the_transport_sequence():
     """Two endpoints must not hand out colliding sequence numbers."""
     t = QueueTransport(
