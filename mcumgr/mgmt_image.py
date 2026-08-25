@@ -514,7 +514,13 @@ class MgmtGrpImage(MgmtGrpBase):
 
             if progress_callback:
                 elapsed = time.monotonic() - start_t
-                rate_kbps = (off / elapsed / 1024) if elapsed > 0 else 0
+                # `sent` (bytes actually transmitted THIS call), not `off`
+                # (the absolute device offset) - a resumed upload's off can
+                # already be far into the file from earlier calls/sessions,
+                # which `off / elapsed` would count as if it had all just
+                # been sent in the last few seconds, wildly overstating the
+                # rate on the very first callback after a resume.
+                rate_kbps = (sent / elapsed / 1024) if elapsed > 0 else 0
                 progress_callback(off, file_size, rate_kbps)
 
         return UploadResult(

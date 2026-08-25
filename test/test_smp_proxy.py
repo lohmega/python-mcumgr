@@ -253,6 +253,53 @@ def test_read_msg_raises_response_error_on_malformed_cbor():
         raise AssertionError("expected SMPResponseError for malformed CBOR")
 
 
+def test_read_msg_raises_response_error_on_a_non_map_envelope():
+    """Valid CBOR that decodes to something other than a map (e.g. a bare
+    int) must not reach the "rc"/"d" membership and index access below -
+    those assume a dict and would otherwise raise a raw TypeError."""
+    non_map = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP,
+        nh_group=MGMT_GROUP_ID_PROXY_FWD_MGMT,
+        nh_id=PROXY_FWD_MGMT_ID_FWD,
+        nh_seq=0,
+    )
+    non_map.set_payload(cbor.dumps(42))
+
+    base = ScriptedBaseTransport([non_map])
+    proxy = SmpProxyTransport(base, address=1)
+    proxy.write_msg(smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=0))
+
+    try:
+        proxy.read_msg(timeout=1)
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError for a non-map envelope")
+
+
+def test_read_msg_raises_response_error_on_a_non_bytes_data_field():
+    """A "d" field of the wrong CBOR type (a string here, not a
+    bytestring) must not reach the len()/from_bytes() calls unguarded."""
+    non_bytes_d = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP,
+        nh_group=MGMT_GROUP_ID_PROXY_FWD_MGMT,
+        nh_id=PROXY_FWD_MGMT_ID_FWD,
+        nh_seq=0,
+    )
+    non_bytes_d.encode_payload({"d": "not bytes"})
+
+    base = ScriptedBaseTransport([non_bytes_d])
+    proxy = SmpProxyTransport(base, address=1)
+    proxy.write_msg(smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=0))
+
+    try:
+        proxy.read_msg(timeout=1)
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError for a non-bytes 'd' field")
+
+
 def test_read_msg_raises_response_error_on_a_truncated_wrapped_message():
     """The proxy envelope's own CBOR is fine and carries a "d" field, but
     the bytes inside it are too short to be a valid SMP message - a

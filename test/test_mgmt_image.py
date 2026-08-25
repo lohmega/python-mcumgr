@@ -487,6 +487,62 @@ def test_partial_upload_then_continue():
     assert bytes(dev.received) == data, "reassembled image must match the file"
 
 
+def test_progress_rate_after_resume_uses_bytes_sent_this_call():
+    """The reported rate must reflect bytes actually transmitted THIS
+    call, not the absolute device offset - a resumed upload's offset can
+    already be far into the file from an earlier call, which would
+    otherwise make the very first progress callback after a resume report
+    a wildly inflated rate (as if all of that had just been sent)."""
+    path, data, _ = _img_file(body_len=20000, name="test_img_big.bin")
+    dev = FakeDevice(slots=[])
+    grp = MgmtGrpImage(dev)
+
+    first = grp.upload(path, max_bytes=4000)
+    assert not first.complete
+    assert first.off > 2000, "need a large-enough offset for the bug to be obvious"
+
+    calls = []
+
+    import mcumgr.mgmt_image as mi
+
+    class _FakeTime:
+        """Replaces mgmt_image's own `time` name (not the real module - other
+        code on the same call stack, e.g. mgmt.py's own time.monotonic() use
+        for its read deadline, must be unaffected)."""
+
+        def __init__(self, seq):
+            self._seq = iter(seq)
+
+        def monotonic(self):
+            return next(self._seq)
+
+    real_time = mi.time
+    # start_t reads 0.0 once; every later read (one per progress callback)
+    # reads 1.0, so elapsed is a fixed, deterministic 1.0s throughout.
+    mi.time = _FakeTime([0.0] + [1.0] * 1000)
+    try:
+        grp.upload(
+            path,
+            progress_callback=lambda off, total, rate_kbps: calls.append(
+                (off, total, rate_kbps)
+            ),
+        )
+    finally:
+        mi.time = real_time
+
+    assert calls, "progress_callback was never invoked"
+    first_off, _total, first_rate_kbps = calls[0]
+    # The old (off/elapsed) formula would report first.off/1024 kB/s here
+    # (elapsed pinned to 1.0s) - orders of magnitude more than what could
+    # actually have been sent in one chunk this call.
+    assert first_rate_kbps * 1024 < first.off, (
+        "rate must be based on bytes sent this call, not the absolute "
+        "device offset ({} implies the whole prior offset was just sent)".format(
+            first_rate_kbps
+        )
+    )
+
+
 def test_partial_upload_many_windows():
     """A whole image transferred in small windows still reassembles."""
     path, data, _ = _img_file(body_len=20000, name="test_img_big.bin")

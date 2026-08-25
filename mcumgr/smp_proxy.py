@@ -216,6 +216,14 @@ class SmpProxyTransport:
             raise smp.SMPResponseError(
                 "Malformed CBOR in proxy response: {}".format(e)
             ) from e
+        if not isinstance(proxy_data, dict):
+            # Valid CBOR, just not a map - the membership/index access below
+            # assumes one; a list or bare scalar decoding successfully
+            # would otherwise reach it and raise a raw TypeError, the same
+            # gap mgmt.py's _communicate() had (see there for the reasoning).
+            raise smp.SMPResponseError(
+                "Proxy response payload is not a CBOR map: {!r}".format(proxy_data)
+            )
 
         # Check for proxy-level error
         if "rc" in proxy_data:
@@ -234,6 +242,16 @@ class SmpProxyTransport:
             raise smp.SMPResponseError("No data field in proxy response")
 
         original_msg_bytes = proxy_data[PROXY_MGMT_KEY_DATA]
+
+        if not isinstance(original_msg_bytes, (bytes, bytearray)):
+            # A "d" value of the wrong CBOR type (a string, a number, ...) -
+            # len() on the debug line below would otherwise raise a raw
+            # TypeError for a non-sized type before from_bytes() ever runs.
+            raise smp.SMPResponseError(
+                "Proxy response 'd' field is not a bytestring: {!r}".format(
+                    type(original_msg_bytes).__name__
+                )
+            )
 
         logger.debug(f"Unwrapped SMP response from proxy: size={len(original_msg_bytes)}")
 
