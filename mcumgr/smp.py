@@ -43,6 +43,18 @@ class SMPDisconnectedError(SMPTransportError):
     """
 
 
+class SMPResponseError(SMPTransportError):
+    """A response was received but failed to validate (bad CRC, malformed
+    framing, unexpected envelope, ...).
+
+    Distinct from a plain timeout: no response arriving is often benign (a
+    reset command's device rebooting before it can answer, say), but a
+    response that DID arrive and turned out corrupt indicates the link
+    itself is unreliable - that should never be silently treated the same
+    as "nothing came back".
+    """
+
+
 class MgmtEndpointError(SMPError):
     """Management endpoint command errors with rc codes"""
 

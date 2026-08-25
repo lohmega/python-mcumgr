@@ -57,6 +57,12 @@ class MgmtGrpEndpoint:
         if tolerate_no_response:
             try:
                 rsp = self._read_matching(req, timeout)
+            except smp.SMPResponseError:
+                # A response DID arrive but failed to validate - a real
+                # transport integrity problem, not the benign "device
+                # rebooted before it could answer" case this flag exists
+                # for. Must not be silently swallowed the same way.
+                raise
             except smp.SMPTransportError:
                 logger.info("no response after write, treating as success")
                 return {}

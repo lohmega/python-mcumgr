@@ -76,6 +76,47 @@ def test_omitted_payload_sends_no_body():
     assert not t.sent[0].payload
 
 
+class RaisingTransport:
+    """Transport whose read_msg always raises a given exception."""
+
+    def __init__(self, exc):
+        self._exc = exc
+        self.sent = []
+        self._seq = smp.SeqCounter()
+
+    def next_seq(self):
+        return self._seq.next()
+
+    def write_msg(self, msg):
+        self.sent.append(msg)
+
+    def read_msg(self, timeout=None):
+        raise self._exc
+
+
+def test_tolerate_no_response_swallows_a_plain_timeout():
+    t = RaisingTransport(smp.SMPTransportError("no response within 5s"))
+    ep = MgmtGrpEndpoint(t, 1, 2)
+
+    rsp = ep.mh_write(tolerate_no_response=True)
+    assert rsp == {}
+
+
+def test_tolerate_no_response_does_not_swallow_a_corrupt_response():
+    """A response that arrived but failed validation (e.g. NLIP CRC
+    mismatch) is a real transport integrity problem, not a benign
+    "device rebooted before answering" - must still raise."""
+    t = RaisingTransport(smp.SMPResponseError("nlip crc mismatch"))
+    ep = MgmtGrpEndpoint(t, 1, 2)
+
+    try:
+        ep.mh_write(tolerate_no_response=True)
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError to propagate")
+
+
 def test_stale_response_is_skipped():
     """A late reply to a previous request must not fail the current one."""
     t = QueueTransport(

@@ -90,14 +90,20 @@ class MgmtGrpProxyBle(MgmtGrpBase):
 
     def _scan_result_poll(self, result_cb=None, timeout=5.0, poll_interval=0.5):
         start_time = time.time()
-        # Poll for results until timeout or callback requests stop
+        # Poll for results until timeout or the callback requests an early
+        # stop. Without a callback there is no "stop" signal at all - every
+        # candidate is kept, so the old `if ret: return ret` returned after
+        # the very first candidate ever seen, contradicting the documented
+        # "list of all discovered devices" contract by only ever reporting
+        # whatever happened to be visible in the first poll cycle.
         ret = []
         while True:
             if timeout:
                 elapsed = time.time() - start_time
                 if elapsed >= timeout:
                     logger.debug("scan poll timeout")
-                    return None
+                    return ret
+
             # Get current scan results
             candidates = self.scan_result()
             candidates = _rename_keys(candidates, 'a', 'address')
@@ -110,7 +116,9 @@ class MgmtGrpProxyBle(MgmtGrpBase):
                 if keep:
                     ret.append(candidate)
 
-            if ret:
+            if result_cb and ret:
+                # A callback signaled "stop scanning" (kept a candidate).
+                # With no callback, keep polling for the full timeout.
                 return ret
 
             # Wait before next poll

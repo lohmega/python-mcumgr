@@ -109,7 +109,9 @@ class NlipPkt:
         (want_crc,) = struct.unpack(">H", crc_be)
         got_crc = self._crc(body)
         if got_crc != want_crc:
-            raise smp.SMPTransportError(
+            # A frame WAS received, it just failed integrity - not "nothing
+            # came back". See SMPResponseError.
+            raise smp.SMPResponseError(
                 "nlip crc mismatch: got 0x{:04x}, expected 0x{:04x}".format(
                     got_crc, want_crc
                 )

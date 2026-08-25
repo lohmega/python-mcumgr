@@ -2,6 +2,7 @@
 
 import cbor2 as cbor
 import logging
+import time
 from . import smp
 from .mgmt_proxy_ble import MgmtGrpProxyBle
 
@@ -51,6 +52,13 @@ class SmpProxyTransport:
         # conversations do not share a counter.
         self._seq = smp.SeqCounter()
         self._target_seq = smp.SeqCounter()
+        # nh_seq of the outer proxy envelope write_msg() most recently sent,
+        # so read_msg() can tell a stale/late envelope (e.g. the response to
+        # a request that already timed out) from the one it is actually
+        # waiting for. Both carry group=MGMT_GROUP_ID_PROXY_FWD_MGMT,
+        # id=PROXY_FWD_MGMT_ID_FWD regardless of which end-device request
+        # they wrap, so that check alone cannot tell them apart.
+        self._last_outer_seq = None
         assert(media == "ble")
         self.ble = MgmtGrpProxyBle(base_transport)
 
@@ -103,6 +111,7 @@ class SmpProxyTransport:
         proxy_msg.hdr.nh_group = MGMT_GROUP_ID_PROXY_FWD_MGMT
         proxy_msg.hdr.nh_id = PROXY_FWD_MGMT_ID_FWD
         proxy_msg.hdr.nh_seq = self._seq.next()
+        self._last_outer_seq = proxy_msg.hdr.nh_seq
 
         # Build CBOR payload with proxy envelope
         proxy_payload = {
@@ -133,8 +142,37 @@ class SmpProxyTransport:
             SMPTransportError: If proxy response is invalid or malformed
             MgmtEndpointError: If proxy returns an error code
         """
-        # Read proxy response from base transport
-        msg = self.base_transport.read_msg(timeout)
+        # Read proxy response from base transport, discarding any stale
+        # envelope that does not answer the write_msg() we are pairing with -
+        # bounded by the same timeout budget, the same approach
+        # MgmtGrpEndpoint._read_matching() uses for the non-proxied case.
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            remaining = timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise smp.SMPTransportError(
+                        "No proxy response with seq {} within {}s".format(
+                            self._last_outer_seq, timeout
+                        )
+                    )
+
+            msg = self.base_transport.read_msg(remaining)
+
+            if (
+                msg.hdr.nh_group == MGMT_GROUP_ID_PROXY_FWD_MGMT
+                and msg.hdr.nh_id == PROXY_FWD_MGMT_ID_FWD
+                and msg.hdr.nh_seq != self._last_outer_seq
+            ):
+                logger.debug(
+                    "discarding stale proxy envelope seq=%s (want %s)",
+                    msg.hdr.nh_seq,
+                    self._last_outer_seq,
+                )
+                continue
+
+            break
 
         # Validate this is a proxy forward response
         if msg.hdr.nh_group != MGMT_GROUP_ID_PROXY_FWD_MGMT:
