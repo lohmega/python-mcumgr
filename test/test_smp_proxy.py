@@ -178,6 +178,60 @@ def test_outer_seq_is_shared_with_the_base_transport():
     assert base.sent[0].hdr.nh_seq == 2, "must continue the shared counter, not restart at 0"
 
 
+def _matching_seq_response(**payload):
+    """A response with the right seq/group/id to pass the stale-response
+    filter, so whatever is wrong with it is a validation failure, not a
+    seq mismatch. payload is the outer proxy_data (rc/d/etc), NOT wrapped
+    in a "d" envelope like _envelope() does - callers control that key.
+    """
+    m = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP,
+        nh_group=MGMT_GROUP_ID_PROXY_FWD_MGMT,
+        nh_id=PROXY_FWD_MGMT_ID_FWD,
+        nh_seq=0,
+    )
+    m.encode_payload(payload)
+    return m
+
+
+def test_read_msg_raises_response_error_not_transport_error_on_malformed_data():
+    """A malformed-but-received proxy response (missing the "d" field, no
+    error rc either) must raise SMPResponseError specifically, not the
+    base SMPTransportError - callers like os.reset()'s tolerate_no_response
+    treat those two differently (see test_mgmt.py)."""
+    base = ScriptedBaseTransport([_matching_seq_response(rc=0)])
+    proxy = SmpProxyTransport(base, address=1)
+    proxy.write_msg(smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=0))
+
+    try:
+        proxy.read_msg(timeout=1)
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError")
+
+
+def test_read_msg_raises_response_error_on_wrong_group():
+    """Same but for a message with our exact expected seq, just the wrong
+    group entirely - passed the stale-response filter, so it is a
+    genuinely malformed answer, not late unrelated traffic."""
+    wrong_group = smp.MgmtMsg(
+        nh_op=smp.MGMT_OP.WRITE_RSP, nh_group=1, nh_id=1, nh_seq=0
+    )
+    wrong_group.encode_payload({"rc": 0})
+
+    base = ScriptedBaseTransport([wrong_group])
+    proxy = SmpProxyTransport(base, address=1)
+    proxy.write_msg(smp.MgmtMsg(nh_op=0, nh_group=9, nh_id=9, nh_seq=0))
+
+    try:
+        proxy.read_msg(timeout=1)
+    except smp.SMPResponseError:
+        pass
+    else:
+        raise AssertionError("expected SMPResponseError")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

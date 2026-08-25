@@ -187,22 +187,27 @@ class SmpProxyTransport:
 
             break
 
-        # Validate this is a proxy forward response
+        # From here on, a message DID arrive matching our expected seq - any
+        # failure below is the received response failing to validate, not
+        # "no response". SMPResponseError (not the plain base class) so a
+        # caller like os.reset()'s tolerate_no_response cannot mistake a
+        # malformed proxy exchange for the benign "device rebooted before
+        # answering" case - see mgmt.py's _communicate().
         if msg.hdr.nh_group != MGMT_GROUP_ID_PROXY_FWD_MGMT:
-            raise smp.SMPTransportError(
+            raise smp.SMPResponseError(
                 f"Expected proxy forward response (group={MGMT_GROUP_ID_PROXY_FWD_MGMT}), "
                 f"got group={msg.hdr.nh_group}"
             )
 
         if msg.hdr.nh_id != PROXY_FWD_MGMT_ID_FWD:
-            raise smp.SMPTransportError(
+            raise smp.SMPResponseError(
                 f"Expected proxy forward response (id={PROXY_FWD_MGMT_ID_FWD}), "
                 f"got id={msg.hdr.nh_id}"
             )
 
         # Decode CBOR payload
         if not msg.payload:
-            raise smp.SMPTransportError("Empty proxy response payload")
+            raise smp.SMPResponseError("Empty proxy response payload")
 
         proxy_data = cbor.loads(msg.payload)
 
@@ -213,9 +218,14 @@ class SmpProxyTransport:
                 rsn = proxy_data.get("rsn")
                 raise smp.MgmtEndpointError("Proxy forwarding failed", rc=rc, rsn=rsn)
 
-        # Extract the wrapped SMP message data
+        # Extract the wrapped SMP message data. A well-behaved proxy always
+        # answers a forward request with either "rc" (checked above) or "d" -
+        # having neither is a malformed response, not a legitimate signal of
+        # anything (the proxy's own "w"/wait field is what covers waiting on
+        # the target device, and that surfaces as a proxy-level rc on
+        # expiry, not a bare missing field here).
         if PROXY_MGMT_KEY_DATA not in proxy_data:
-            raise smp.SMPTransportError("No data field in proxy response (possible timeout)")
+            raise smp.SMPResponseError("No data field in proxy response")
 
         original_msg_bytes = proxy_data[PROXY_MGMT_KEY_DATA]
 
