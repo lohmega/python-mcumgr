@@ -1,23 +1,28 @@
 import logging
 import sys
 import os
-import cbor
+import cbor2 as cbor
 
 import utils
 utils.use_repo_sources(True)
 
-from mcumgr import smp, ble, nlip
+from mcumgr import smp
+from mcumgr import transport_serial, transport_ble
+from mcumgr.transport_serial import SMPTransportSerial
+from mcumgr.transport_ble import SMPTransportBLE
 
 
 def set_verbose(verbose_level):
-    loggers = [ble.logger, smp.logger, nlip.logger]
+    loggers = [transport_ble.logger, smp.logger, transport_serial.logger]
 
     if verbose_level <= 1:
         level = logging.WARNING
-    if verbose_level == 2:
+    elif verbose_level == 2:
         level = logging.INFO
     elif verbose_level >= 3:
         level = logging.DEBUG
+    else:
+        level = logging.WARNING
 
     if verbose_level >= 4:
         bleak_logger = logging.getLogger("bleak")
@@ -45,14 +50,16 @@ def main():
     data = cbor.dumps({"d": "hello" })
     data = cbor.dumps({"d": "hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello" })
     req.set_payload(data)
-    
-    if (0):
-        with ble.SMPClientBLE(name="hwt_lmin-0000", timeout=10) as clnt:
+
+    if 0:
+        with SMPTransportBLE(name="semafor", timeout=10) as clnt:
             clnt.write_msg(req)
             rsp = clnt.read_msg()
 
     else:
-        with nlip.SMPClientNlip(device="/dev/ttyUSB0", baudrate="115200", timeout=10) as clnt:
+        port="/dev/serial/by-id/usb-ZEPHYR_SMP_Dongle_48177A152FF0F9E2-if02"
+        #"/dev/ttyUSB0"
+        with SMPTransportSerial(device=port, baudrate="115200", timeout=10) as clnt:
             clnt.write_msg(req)
             rsp = clnt.read_msg()
 

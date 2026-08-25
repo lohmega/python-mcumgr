@@ -5,6 +5,7 @@
 
 from enum import Enum, IntEnum
 import struct
+import cbor2 as cbor
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,12 +15,106 @@ MGMT_MAX_MTU = 1024
 
 def _enum2str(enumclass, val):
     """
-    enumclass - a Enum class, either instance or class 
+    enumclass - a Enum class, either instance or class
     """
     try:
         return enumclass(val).name
     except ValueError:
         return "{}.<unknown {}>".format(enumclass.__name__, val)
+
+
+# Exception Classes
+class SMPError(Exception):
+    """Base exception for all SMP-related errors"""
+    pass
+
+
+class SMPTransportError(SMPError):
+    """Transport-level errors (connection, communication failures)"""
+    pass
+
+
+class SMPDisconnectedError(SMPTransportError):
+    """The link went away.
+
+    Distinct from a plain timeout: a timeout is worth retrying on the same
+    connection, a dead link is not - retrying just burns the retry budget
+    against a transport that cannot recover without reconnecting.
+    """
+
+
+class SMPResponseError(SMPTransportError):
+    """A response was received but failed to validate (bad CRC, malformed
+    framing, unexpected envelope, ...).
+
+    Distinct from a plain timeout: no response arriving is often benign (a
+    reset command's device rebooting before it can answer, say), but a
+    response that DID arrive and turned out corrupt indicates the link
+    itself is unreliable - that should never be silently treated the same
+    as "nothing came back".
+    """
+
+
+class MgmtEndpointError(SMPError):
+    """Management endpoint command errors with rc codes"""
+
+    def __init__(self, message, rc=None, rsn=None):
+        """
+        Initialize management endpoint error.
+
+        Args:
+            message: Error message
+            rc: Error code from response (optional)
+            rsn: Reason string from response (optional)
+        """
+        super().__init__(message)
+        self.rc = rc
+        self.rsn = rsn
+        self.error_name = None
+
+        # Get symbolic name for error code if available
+        if rc is not None:
+            # Import locally to avoid circular dependency
+            # MGMT_ERR will be defined later in this file
+            try:
+                self.error_name = MGMT_ERR.int_to_str(rc)
+            except:
+                self.error_name = f"UNKNOWN({rc})"
+
+    def __str__(self):
+        """Format error with all available context"""
+        parts = [super().__str__()]
+
+        if self.rc is not None:
+            if self.error_name:
+                parts.append(f"rc={self.rc} ({self.error_name})")
+            else:
+                parts.append(f"rc={self.rc}")
+
+        if self.rsn:
+            parts.append(f"reason: {self.rsn}")
+
+        return " | ".join(parts)
+
+
+class SeqCounter:
+    """Sequence number generator shared by every endpoint on one transport.
+
+    `nh_seq` is a single uint8 field in the SMP header and the device echoes it
+    back verbatim, so it is what lets a caller match a response to its request.
+    Giving each management endpoint its own counter (as an earlier version did)
+    means two endpoints on the same connection both start at 0 and hand out
+    colliding sequence numbers. libmcumgr threads one `uint8_t *seq` through a
+    session for the same reason - keep exactly one of these per transport.
+    """
+
+    def __init__(self, start=0):
+        self._seq = start & 0xFF
+
+    def next(self):
+        seq = self._seq
+        self._seq = (self._seq + 1) & 0xFF
+        return seq
 
 
 class MGMT_OP(IntEnum):
@@ -31,6 +126,11 @@ class MGMT_OP(IntEnum):
     WRITE         = 2
     WRITE_RSP     = 3
     # fmt: on
+
+    @staticmethod
+    def int_to_str(val):
+        """Convert opcode integer to string name"""
+        return _enum2str(MGMT_OP, val)
 
 
 class MGMT_GROUP_ID(IntEnum):
@@ -52,6 +152,11 @@ class MGMT_GROUP_ID(IntEnum):
     PERUSER = 64
     # fmt: on
 
+    @staticmethod
+    def int_to_str(val):
+        """Convert group ID integer to string name"""
+        return _enum2str(MGMT_GROUP_ID, val)
+
 
 class MGMT_ERR(IntEnum):
     """ mcumgr error codes """
@@ -67,8 +172,15 @@ class MGMT_ERR(IntEnum):
     EMSGSIZE     = 7       #/* Response too large. */
     ENOTSUP      = 8       #/* Command not supported. */
     ECORRUPT     = 9       #/* Corrupt */
+    EBUSY        = 10      #/* Resource busy. */
+    EACCESSDENIED = 11     #/* Access denied. */
     EPERUSER     = 256
     # fmt: on
+
+    @staticmethod
+    def int_to_str(val):
+        """Convert error code integer to string name"""
+        return _enum2str(MGMT_ERR, val)
 
 
 class MGMT_EVT_OP(IntEnum):
@@ -79,6 +191,11 @@ class MGMT_EVT_OP(IntEnum):
     CMD_STATUS       =  0x02
     CMD_DONE         =  0x03
     # fmt: on
+
+    @staticmethod
+    def int_to_str(val):
+        """Convert event opcode integer to string name"""
+        return _enum2str(MGMT_EVT_OP, val)
 
 
 class Mynewt:
@@ -93,6 +210,11 @@ class Mynewt:
         DATETIME_STR   = 4
         RESET          = 5
         # fmt: on
+
+        @staticmethod
+        def int_to_str(val):
+            """Convert OS management ID integer to string name"""
+            return _enum2str(Mynewt.OS_MGMT_ID, val)
 
     """
     #define OS_MGMT_TASK_NAME_LEN       32
@@ -171,8 +293,14 @@ class MgmtMsg:
     """
     MgmtMsg base class that only operates on bytes payload
     """
-    def __init__(self, hdr=MgmtHdr(), payload=bytearray(), **kwargs):
-        self.hdr = hdr
+    def __init__(self, hdr=None, payload=None, **kwargs):
+        # Both defaults must be built per instance. They used to be
+        # `hdr=MgmtHdr(), payload=bytearray()`, which Python evaluates once at
+        # definition time, so every MgmtMsg built without an explicit header
+        # shared ONE MgmtHdr: setting nh_seq on a new message silently
+        # rewrote the header of every other message still being held.
+        self.hdr = hdr if hdr is not None else MgmtHdr()
+        self.payload = None
         # note that nh_len excluded here
         for nh in ["nh_op", "nh_flags", "nh_group", "nh_seq", "nh_id"]:
             if nh in kwargs:
@@ -185,6 +313,13 @@ class MgmtMsg:
         hdr_size = MgmtHdr.BYTE_SIZE if self.hdr else 0
         payload_size = len(self.payload) if self.payload else 0
         return hdr_size + payload_size
+
+    def encode_payload(self, data_dict):
+        data = cbor.dumps(data_dict)
+        self.set_payload(data)
+
+    def decode_payload(self):
+        return cbor.loads(self.payload)
 
     def set_payload(self, obj):
         if obj is None:
