@@ -178,6 +178,7 @@ class MgmtGrpImage(MgmtGrpBase):
         confirm=False,
         timeout=DEFAULT_TIMEOUT,
         retries=DEFAULT_EBUSY_RETRIES,
+        image_num=None,
     ):
         """Mark an image pending (test) or confirmed.
 
@@ -193,12 +194,14 @@ class MgmtGrpImage(MgmtGrpBase):
                       Pass the hash explicitly when confirming a test boot.
             confirm:  False marks the image pending (boots once, reverts
                       unless confirmed). True confirms it permanently.
+            image_num: which image's slot 1 to default img_hash from, on a
+                      multi-image device. Only used when img_hash is None.
 
         Returns the ImageState reported after the write.
         """
         if img_hash is None:
             state = self.get_state(timeout=timeout)
-            slot1 = state.slot(1)
+            slot1 = state.slot(1, image_num)
             if slot1 is None or not slot1.hash:
                 raise MgmtEndpointError("No image in slot 1 to mark")
             img_hash = slot1.hash
@@ -216,17 +219,21 @@ class MgmtGrpImage(MgmtGrpBase):
         )
         return ImageState(rsp)
 
-    def test(self, img_hash=None, timeout=DEFAULT_TIMEOUT):
+    def test(self, img_hash=None, timeout=DEFAULT_TIMEOUT, image_num=None):
         """Mark an image pending: boot it once, revert unless confirmed."""
-        return self.set_state(img_hash, confirm=False, timeout=timeout)
+        return self.set_state(
+            img_hash, confirm=False, timeout=timeout, image_num=image_num
+        )
 
-    def confirm(self, img_hash=None, timeout=DEFAULT_TIMEOUT):
+    def confirm(self, img_hash=None, timeout=DEFAULT_TIMEOUT, image_num=None):
         """Confirm an image permanently.
 
         See set_state() on why you usually want to pass img_hash explicitly
         when confirming after a test boot.
         """
-        return self.set_state(img_hash, confirm=True, timeout=timeout)
+        return self.set_state(
+            img_hash, confirm=True, timeout=timeout, image_num=image_num
+        )
 
     @staticmethod
     def _coerce_hash(img_hash):
@@ -441,6 +448,21 @@ class MgmtGrpImage(MgmtGrpBase):
                 )
 
             new_off = rsp["off"]
+            if new_off > file_size:
+                # Cannot be a legitimate resume point for THIS file - it is
+                # the device's own leftover context from some other, larger
+                # upload. Blindly continuing from here would either splice
+                # new bytes onto an unrelated prefix, or (since off would
+                # already be >= file_size) exit the loop immediately and
+                # report a bogus `complete=True` having sent nothing at all.
+                # Force a clean restart instead.
+                logger.warning(
+                    "device offset %d exceeds this image's size %d - "
+                    "forcing a restart from 0",
+                    new_off,
+                    file_size,
+                )
+                new_off = 0
             if resumed_off is None:
                 resumed_off = new_off
                 if new_off not in (0, off):

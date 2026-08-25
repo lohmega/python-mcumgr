@@ -204,6 +204,26 @@ def test_confirm_without_hash_uses_slot1():
     assert req["hash"] == h1
 
 
+def test_confirm_without_hash_is_scoped_to_image_num():
+    """On a multi-image device, defaulting the hash must use the requested
+    image's slot 1, not whichever image happens to report slot 1 first."""
+    image0_slot1 = b"\x02" * 32
+    image1_slot1 = b"\x03" * 32
+    dev = FakeDevice(
+        slots=[
+            _slot(0, b"\x01" * 32, image=0),
+            _slot(1, image0_slot1, image=0),
+            _slot(0, b"\x04" * 32, image=1),
+            _slot(1, image1_slot1, image=1),
+        ]
+    )
+    grp = MgmtGrpImage(dev)
+
+    grp.confirm(image_num=1)
+    _op, _id, req = dev.requests[-1]
+    assert req["hash"] == image1_slot1, "must confirm image 1's slot, not image 0's"
+
+
 def test_hash_accepts_hex_string():
     h1 = b"\x02" * 32
     dev = FakeDevice(slots=[_slot(0, b"\x01" * 32), _slot(1, h1)])
@@ -623,6 +643,27 @@ def test_upload_stall_is_detected():
         assert "stalled" in str(e)
     else:
         raise AssertionError("expected MgmtEndpointError for a stalled upload")
+
+
+def test_upload_restarts_on_an_offset_past_file_size():
+    """A device offset that cannot belong to this file must not be
+    followed - it is the device's leftover context from some other, larger
+    upload. Blindly accepting it would exit the loop immediately (since
+    off >= file_size right away) and report a bogus complete=True, having
+    sent nothing of the actual image.
+    """
+    path, data, digest = _img_file()
+    dev = FakeDevice(slots=[])
+    dev.upload_off = 99999  # far beyond this file's size
+    dev.total_len = 200000
+    dev.received = bytearray(b"\xee" * 99999)
+
+    grp = MgmtGrpImage(dev)
+    res = grp.upload(path, resume=True)
+
+    assert res.complete
+    assert res.off == len(data)
+    assert bytes(dev.received) == data, "must restart, not report a bogus complete"
 
 
 def test_upload_error_rc_raises():

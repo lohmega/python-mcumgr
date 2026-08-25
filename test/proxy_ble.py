@@ -40,7 +40,7 @@ def setup_logging(verbose_level):
         stream=sys.stderr
     )
 
-def scan(base_transport, scan_filters=[], timeout=8*1000):
+def scan(base_transport, scan_filters=[], timeout=8):
     assert base_transport.is_connected()
 
     # Create BLE proxy management interface
@@ -111,7 +111,7 @@ def main():
 
     base_tp = SMPTransportSerial(port=port, baudrate=args.baudrate, timeout=args.timeout)
     with base_tp:
-        res = scan(base_tp, scan_filters)
+        res = scan(base_tp, scan_filters, timeout=args.timeout)
 
         print("scan result:")
         pprint(res)

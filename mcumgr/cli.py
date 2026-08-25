@@ -175,13 +175,19 @@ def _check_hash_arg(hash_arg):
 
 def do_image_test(args, grp):
     args.hash = _check_hash_arg(args.hash)
-    print(grp.test(args.hash, timeout=args.timeout).format())
+    print(
+        grp.test(args.hash, timeout=args.timeout, image_num=args.image_num).format()
+    )
     return EXIT_SUCCESS
 
 
 def do_image_confirm(args, grp):
     args.hash = _check_hash_arg(args.hash)
-    print(grp.confirm(args.hash, timeout=args.timeout).format())
+    print(
+        grp.confirm(
+            args.hash, timeout=args.timeout, image_num=args.image_num
+        ).format()
+    )
     return EXIT_SUCCESS
 
 
@@ -288,10 +294,24 @@ def parse_args(argv=None):
 
     s = img_sub.add_parser("test", help="mark image pending (boot once)")
     s.add_argument("hash", nargs="?", default=None, help="image hash (default: slot 1)")
+    s.add_argument(
+        "--image-num",
+        type=int,
+        default=None,
+        help="image number for multi-image devices, used only to pick the "
+        "default slot-1 hash when no hash is given",
+    )
     s.set_defaults(_func=do_image_test)
 
     s = img_sub.add_parser("confirm", help="confirm image permanently")
     s.add_argument("hash", nargs="?", default=None, help="image hash (default: slot 1)")
+    s.add_argument(
+        "--image-num",
+        type=int,
+        default=None,
+        help="image number for multi-image devices, used only to pick the "
+        "default slot-1 hash when no hash is given",
+    )
     s.set_defaults(_func=do_image_confirm)
 
     s = img_sub.add_parser("erase", help="erase a slot")
