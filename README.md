@@ -70,6 +70,43 @@ discovery. The transport already retries connecting a few times; for such
 devices, retry the whole command in a loop rather than raising the timeout.
 
 
+Linux/BlueZ: every connection dies during service discovery
+===========================================================
+
+If EVERY connection to a device fails a few seconds in with
+
+    failed to discover services, device disconnected
+
+while the same device works fine from an nRF52-dongle central or a
+J-Link/SWD path, the builtin adapter's LE PHY handling is the prime
+suspect, not the device's SMP stack. Intel adapters (AX201 and friends)
+request a PHY upgrade to LE 2M right after the MTU exchange; some Zephyr
+peripherals accept the update and then go completely deaf on 2M (seen on
+Lohmega protractor_r2, lohmega-zephyr#206 - suspected FEM timing). The
+link then sits silent until the supervision timeout and BlueZ reports the
+drop mid-discovery. `btmon` makes it unambiguous: an
+`LE PHY Update Complete: LE 2M` followed by nothing but
+`Disconnect Complete, Reason: Connection Timeout (0x08)`.
+
+Two adapter-side fixes, both automated by `tools/bluez_le_tune.py` (root):
+
+```sh
+sudo tools/bluez_le_tune.py C0:01:F0:00:8B:52 [MORE_ADDRS...]
+```
+
+1. It deselects the LE 2M / LE Coded PHYs (mgmt Set PHY Configuration, the
+   equivalent of `btmgmt phy ... LE1MTX LE1MRX`), so the central never
+   proposes leaving 1M.
+2. It loads per-device connection parameters with an 8 s supervision
+   timeout (BlueZ's 420 ms default is also too tight for peripherals that
+   stall their BLE stack around radio-SPI/e-ink/flash work, even at 1M).
+
+It uses the kernel mgmt socket directly, so it works on SecureBoot/lockdown
+machines where the `/sys/kernel/debug/bluetooth/` knobs are unwritable.
+Settings are runtime-only - re-run after a reboot or adapter power cycle.
+With both applied, uploads to a protractor run at ~19 kB/s.
+
+
 Partial uploads over an intermittent link
 =========================================
 
