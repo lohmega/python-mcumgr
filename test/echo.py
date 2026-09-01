@@ -1,6 +1,5 @@
 import logging
 import sys
-import os
 import cbor2 as cbor
 
 import utils
