@@ -3,7 +3,7 @@
 #   mynewt-mcumgr/protocol.md
 #   mynewt-mcumgrmgmt/inlcude/mgmt.h
 
-from enum import Enum, IntEnum
+from enum import IntEnum
 import struct
 import cbor2 as cbor
 import logging

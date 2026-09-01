@@ -7,9 +7,7 @@ Runs standalone (`python3 test/test_mgmt_image.py`) or under pytest.
 Requires cbor2.
 """
 
-import hashlib
 import os
-import struct
 import sys
 import time
 

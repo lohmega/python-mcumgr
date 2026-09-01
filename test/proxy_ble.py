@@ -10,14 +10,12 @@ import argparse
 import glob
 import logging
 import sys
-import os
 
 import utils
 from pprint import pprint
 utils.use_repo_sources(True)
 
 from mcumgr.transport_serial import SMPTransportSerial
-from mcumgr import smp
 from mcumgr.smp_proxy import SmpProxyTransport
 from mcumgr.mgmt_proxy_ble import MgmtGrpProxyBle
 from mcumgr.mgmt_image import MgmtGrpImage
@@ -64,7 +62,7 @@ def scan(base_transport, scan_filters=[], timeout=8):
 
     # Extract device address from scan results
     if not results:
-        logger.error(f"No devices found matching filters")
+        logger.error("No devices found matching filters")
         return None
 
     return results
