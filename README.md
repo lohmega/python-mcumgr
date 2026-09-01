@@ -17,6 +17,15 @@ python3 -m pip install git+https://git@github.com/lohmega/python-mcumgr.git
 To run from a checkout without installing, use the `./mcumgr.sh` wrapper, which
 puts the repo on `PYTHONPATH`.
 
+For development, use a local virtualenv with an editable install so code
+changes are picked up without reinstalling (`.venv/` is gitignored):
+
+```
+python3 -m venv .venv
+.venv/bin/pip install -e . pyflakes
+source .venv/bin/activate
+```
+
 
 Command line
 ============
@@ -188,7 +197,7 @@ The image parser and the upload state machine are covered by tests that need no
 hardware:
 
 ```
-./test/run.sh                       # needs cbor2
+./test/run.sh                       # PYTHON=.venv/bin/python if not activated
 ```
 
 The image parser is checked against real signed firmware; the endpoint layer
