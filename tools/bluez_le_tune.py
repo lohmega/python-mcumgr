@@ -80,13 +80,13 @@ def mgmt_cmd(fd, opcode, index, payload=b""):
     os.write(fd, struct.pack("<HHH", opcode, index, len(payload)) + payload)
     while True:
         resp = os.read(fd, 1024)
-        ev, _idx, plen = struct.unpack("<HHH", resp[:6])
+        ev, idx, plen = struct.unpack("<HHH", resp[:6])
         body = resp[6 : 6 + plen]
-        if ev in (MGMT_EV_CMD_COMPLETE, MGMT_EV_CMD_STATUS):
+        if ev in (MGMT_EV_CMD_COMPLETE, MGMT_EV_CMD_STATUS) and idx == index:
             op, status = struct.unpack("<HB", body[:3])
             if op == opcode:
                 return status, body[3:]
-        # anything else is an unsolicited event - keep reading
+        # anything else (unsolicited event, other controller) - keep reading
 
 
 def bdaddr(addr):
